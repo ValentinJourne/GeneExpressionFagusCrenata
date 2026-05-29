@@ -14,71 +14,9 @@
 #https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.html
 #for the install some packages require other dependencies
 #see eg. https://bioconductor.org/packages/release/bioc/html/EnhancedVolcano.html
-source('functionsGeneExp.R')
-using(
-  'here',
-  'pheatmap',
-  'tidyverse',
-  'readxl',
-  "ggdendro",
-  'factoextra',
-  'NbClust',
-  'RColorBrewer',
-  'UpSetR',
-  'cowplot',
-  'patchwork',
-  "Boruta",
-  "data.table",
-  "lubridate",
-  "betareg",
-  "EnhancedVolcano",
-  "limma",
-  "ComplexHeatmap",
-  "ggimage",
-  "ggfortify"
-)
+source('functions_gene_exp_analysis_viz.R')
+source('packages_loading.R')
 
-library(DHARMa)
-library(glmmTMB)
-library(emmeans)
-library(gghalves)
-library(ggsignif)
-library(lme4) # for mixed models
-library(lmerTest) # adds p-values to lme4 output
-#set theme for ggplot
-theme_set(theme_cowplot())
-#general color option
-#colors <- colorRampPalette(brewer.pal(9, "BrBG"))(100) #RdBu PuOr
-colors <- colorRampPalette(scico::scico(30, palette = "roma", direction = -1))(
-  100
-)
-
-colors.roma.short <- colorRampPalette(scico::scico(
-  30,
-  palette = "roma",
-  direction = -1
-))(
-  10
-)
-
-base_cols_treeid <- ggsci::pal_iterm("Rose Pine")(6)
-TreeID.color.pal = colorRampPalette(base_cols_treeid)(8)
-
-
-genes.color <- ggsci::pal_aaas()(10)
-genes.color.pal = colorRampPalette(genes.color)(13)
-
-
-RColorBrewer::brewer.pal(n = 12, name = "BuPu")
-colors.pvalues <- colorRampPalette(c(
-  "#C6DBEF",
-  "#9ECAE1",
-  "#6BAED6",
-  "#4292C6",
-  "#2171B5",
-  "#08519C",
-  "#08306B"
-))(100)
 #####################################
 #Fagus Gene Expression files loading and cleaning
 #####################################
@@ -90,6 +28,7 @@ blastparabidopsis = read_excel(
 
 #plaza data used later for GO data analysis
 #tair id with function
+#got it from https://vandepoelelab.be/plaza/instances/dicots_05/download/download select arabidospsis
 plaza.go.data = read.delim(
   "~/Dropbox/F_crenata/Plaza/go.ath.csv",
   header = FALSE,
@@ -234,6 +173,48 @@ to.remove.below.threshold = sumexp %>%
   filter(!mean < 1) %>%
   dplyr::select(-sum)
 
+#####################
+#make summary table
+data.genes.all %>% dplyr::select(TreeID, month, year) %>% distinct()
+sampling_heatmap <- data.genes.all %>%
+  distinct(TreeID, Tissue, year, month) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as_factor(TreeID))) %>%
+  filter(month != 10 & Tissue == "L") %>%
+  mutate(
+    sampled = 1,
+    timepoint = paste0(year, "-", sprintf("%02d", month))
+  ) %>%
+  complete(TreeID, timepoint, fill = list(sampled = 0)) %>%
+  mutate(
+    timepoint = factor(timepoint, levels = sort(unique(timepoint)))
+  )
+
+sampled.heatmap = ggplot(
+  sampling_heatmap,
+  aes(x = timepoint, y = TreeID, fill = factor(sampled))
+) +
+  scale_y_reverse(breaks = sampling_heatmap$TreeID) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_manual(
+    values = c("0" = "grey90", "1" = "black"),
+    labels = c("Not sampled", "Sampled"),
+    name = ""
+  ) +
+  xlab("") +
+  ylab("Tree ID") +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = "bottom"
+  )
+sampled.heatmap
+cowplot::save_plot(
+  'figuresR/sampled.heatmap.pdf',
+  sampled.heatmap,
+  nrow = .8,
+  ncol = 1
+)
 #####################################
 #Fagus Gene Expression - focus on leaves
 #####################################
@@ -283,11 +264,23 @@ flo.intensity = read_excel(
 string_to_replace = '<5'
 new_value = 4
 
+mast_years <- c(2015, 2018, 2022)
+induction_years <- mast_years - 1
+
+shade_df_factor <- tibble::tibble(
+  year = c(induction_years, mast_years),
+  type = rep(c("Induction year", "Masting year"), each = length(mast_years)),
+  xmin = year - 0.45,
+  xmax = year + 0.45,
+  ymin = -Inf,
+  ymax = Inf
+)
+
 flo.intensity = flo.intensity %>%
   mutate_at(vars(-`Tree ID`), list(replace_string)) %>%
   mutate_at(vars(-`Tree ID`), as.numeric) %>%
   mutate(`Tree ID` = as.character(`Tree ID`)) %>%
-  rename(TreeID = `Tree ID`) %>%
+  dplyr::rename(TreeID = `Tree ID`) %>%
   dplyr::filter(
     TreeID %in% c('60', '202', '206', '224', '263', '264', '209', '210')
   ) %>%
@@ -296,27 +289,45 @@ flo.intensity = flo.intensity %>%
     names_to = 'year',
     values_to = 'flowering.percentage'
   ) %>%
-  mutate(year = as.numeric(as.character(year)))
+  mutate(year = as.numeric(as.character(year))) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+  mutate(TreeID = as_factor(TreeID))
 
 #here I am shifting to one year, because it is the year of flowering, but I know that initiation
 #occured the previous year
 plotflointensity = flo.intensity %>%
   filter(year > 2013) %>%
-  mutate(year = year, year = as_factor(year)) %>%
+  #mutate(year = year, year = as_factor(year)) %>%
   ggplot(aes(
     x = year,
     y = flowering.percentage,
     group = TreeID,
-    col = TreeID,
-    fill = TreeID
+    col = TreeID #,
+    #fill = TreeID
   )) +
-  geom_line(alpha = .5) +
-  geom_point(shape = 21) +
+  geom_rect(
+    data = shade_df_factor,
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = type),
+    inherit.aes = FALSE,
+    alpha = 0.1,
+    color = NA
+  ) +
+  geom_line(alpha = .8) +
+  geom_point(shape = 16, alpha = .8) +
   ylab('Flowering intensity (%)') +
   xlab('') +
-  theme(legend.position = c(.8, .8)) +
+  scale_x_continuous(
+    breaks = 2014:2023
+  ) +
+  theme(legend.position = c(.55, .7)) +
   scale_color_manual(values = TreeID.color.pal, "Tree") +
-  scale_fill_manual(values = TreeID.color.pal, "Tree") #+
+  scale_fill_manual(values = rev(c("black", "cyan"))) +
+  theme(legend.title = element_blank()) +
+  guides(color = guide_legend(ncol = 2), fill = "none")
+
+plotflointensity
 #stat_summary(
 #  aes(group = 1),
 #  fun = mean,
@@ -325,43 +336,42 @@ plotflointensity = flo.intensity %>%
 #  color = "black"
 #)
 
-plotflointensity
-
-cowplot::save_plot(
-  'figuresR/seedproduction.pdf',
-  plotflointensity,
-  nrow = 1,
-  ncol = 1
-)
-
-plot.inititation = flo.intensity %>%
-  filter(year > 2014) %>%
-  mutate(year = year - 1, year = as_factor(year)) %>%
-  ggplot(aes(
-    x = year,
-    y = flowering.percentage,
-    group = TreeID,
-    col = TreeID,
-    fill = TreeID
-  )) +
-  geom_line(alpha = .5) +
-  geom_point(shape = 21) +
-  ylab('Initiation intensity (%)') +
-  xlab('') +
-  theme(legend.position = c(.8, .8)) +
-  scale_color_manual(values = TreeID.color.pal, "Tree") +
-  scale_fill_manual(values = TreeID.color.pal, "Tree") +
-  theme(legend.position = "none")
-
-plot.inititation
-
-cowplot::save_plot(
-  'figuresR/plot.inititation.pdf',
-  plot.inititation,
-  nrow = .8,
-  ncol = 1.5 / 2
-)
-
+# plotflointensity
+#
+# # cowplot::save_plot(
+# #   'figuresR/seedproduction.pdf',
+# #   plotflointensity,
+# #   nrow = 1,
+# #   ncol = 1
+# # )
+#
+# plot.inititation = flo.intensity %>%
+#   filter(year > 2014) %>%
+#   mutate(year = year - 1, year = as_factor(year)) %>%
+#   ggplot(aes(
+#     x = year,
+#     y = flowering.percentage,
+#     group = TreeID,
+#     col = TreeID,
+#     fill = TreeID
+#   )) +
+#   geom_line(alpha = .5) +
+#   geom_point(shape = 21) +
+#   ylab('Initiation intensity (%)') +
+#   xlab('') +
+#   theme(legend.position = c(.8, .8)) +
+#   scale_color_manual(values = TreeID.color.pal, "Tree") +
+#   scale_fill_manual(values = TreeID.color.pal, "Tree") +
+#   theme(legend.position = "none")
+#
+# plot.inititation
+#
+# cowplot::save_plot(
+#   'figuresR/plot.inititation.pdf',
+#   plot.inititation,
+#   nrow = .8,
+#   ncol = 1.5 / 2
+# )
 
 #convert to binary mast vs non mast years
 #and shift to one year because flowering is the year of flowering but initiation is the previous year
@@ -379,6 +389,9 @@ average.flo.intensity.individual = flo.intensity %>%
   ) %>%
   ungroup()
 
+flo.intensity %>%
+  group_by(year) %>%
+  summarise(mean = mean(flowering.percentage), sd = sd(flowering.percentage))
 #####################################
 #WEATHER AND CLIMATE dataset, loading, cleaning and plot
 #####################################
@@ -397,7 +410,7 @@ data.summary.temperature.month = temperature.station %>%
     sd.temp = sd(meanTemp, na.rm = T),
     .groups = "drop"
   ) %>%
-  filter(year > 2013 & year < 2023)
+  filter(year > 2013 & year < 2024)
 
 
 # create a continuous time variable
@@ -408,7 +421,7 @@ data.summary.temperature.month <- data.summary.temperature.month %>%
   )
 
 daily <- temperature.station %>%
-  filter(year > 2013, year < 2023, month %in% 6:10)
+  filter(year > 2013, year < 2024, month %in% 6:10)
 
 daily_full = daily %>%
   mutate(Date = as.Date(Date)) %>%
@@ -419,7 +432,7 @@ daily_full = daily %>%
     year = year(Date),
     month = month(Date)
   ) %>%
-  filter(year > 2013, year < 2023, month %in% 6:10)
+  filter(year > 2013, year < 2024, month %in% 6:10)
 
 daily_roll <- daily %>%
   arrange(date.bis) %>%
@@ -440,50 +453,120 @@ daily_roll <- daily %>%
     year = year(date.bis),
     month = month(date.bis)
   ) %>%
-  filter(year > 2013, year < 2023, month %in% 6:10) %>%
+  filter(year > 2013, year < 2024, month %in% 6:10) %>%
   mutate(
     year = year(date.bis),
     season_day = row_number(), # continuous index after filtering
     year_f = factor(year)
-  )
+  ) %>%
+  group_by(year) %>%
+  arrange(date.bis, .by_group = TRUE) %>%
+  mutate(
+    season_index = row_number(),
+    n_days = n(),
+    x_year = year + (season_index - 1) / n_days
+  ) %>%
+  ungroup()
 
 breaks_df <- daily_roll %>%
   group_by(year) %>%
   summarise(season_day0 = min(season_day), .groups = "drop")
+shade_df <- breaks_df %>%
+  arrange(year) %>%
+  mutate(
+    xmin = season_day0,
+    xmax = lead(
+      season_day0,
+      default = max(daily_roll$season_day, na.rm = TRUE) + 1
+    ),
+    type = case_when(
+      year %in% mast_years ~ "Mast year",
+      year %in% induction_years ~ "Induction year",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(type))
+
+shade_df_year <- shade_df %>%
+  mutate(
+    xmin = breaks_df$year[match(xmin, breaks_df$season_day0)],
+    xmax = breaks_df$year[match(xmax, breaks_df$season_day0)]
+  )
+
+shade_df_year <- shade_df %>%
+  mutate(
+    xmin = breaks_df$year[match(xmin, breaks_df$season_day0)],
+    xmax = xmin + 0.99
+  )
+
+s <- breaks_df %>%
+  arrange(year) %>%
+  mutate(
+    xmin = season_day0,
+    xmax = lead(
+      season_day0,
+      default = max(daily_roll$season_day, na.rm = TRUE) + 1
+    ),
+    type = case_when(
+      year %in% mast_years ~ "Mast year",
+      year %in% induction_years ~ "Induction year",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(type))
 
 
-daily.temp = ggplot(daily_roll) +
-  geom_line(
-    aes(season_day, meanTemp, group = year_f),
-    alpha = .9,
-    color = "darkblue",
-    linewidth = .3
+daily.temp <- ggplot(daily_roll) +
+  geom_rect(
+    data = shade_df_year,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = -Inf,
+      ymax = Inf,
+      fill = type
+    ),
+    inherit.aes = FALSE,
+    alpha = 0.1
   ) +
   geom_line(
-    aes(season_day, temp_roll15days, group = year_f),
-    linewidth = 1.2,
-    color = "deepskyblue"
+    aes(x_year, meanTemp, group = year_f),
+    alpha = .5,
+    color = "darkblue",
+    linewidth = .1,
+    na.rm = TRUE
+  ) +
+  geom_line(
+    aes(x_year, temp_roll15days, group = year_f),
+    linewidth = .4,
+    color = "black",
+    na.rm = TRUE
   ) +
   scale_x_continuous(
-    breaks = breaks_df$season_day0,
-    labels = breaks_df$year,
+    breaks = 2014:2023,
+    labels = 2014:2023,
+    limits = c(2014, 2023.99),
     expand = c(0, 0)
   ) +
   xlab("") +
-  ylab("Daily T (°C)\n")
+  ylab("Daily T (°C)\n") +
+  scale_fill_manual(values = rev(c("black", "cyan"))) +
+  theme(legend.title = element_blank()) +
+  guides(fill = "none")
+
 daily.temp
 
-cowplot::save_plot(
-  'figuresR/daily_temp.pdf',
-  daily.temp,
-  nrow = .5,
-  ncol = 2
-)
+# cowplot::save_plot(
+#   'figuresR/daily_temp.pdf',
+#   daily.temp,
+#   nrow = .5,
+#   ncol = 2
+# )
 
 #now make anomalies plot
 
 temp_anom_year <- temperature.station %>%
-  filter(month %in% c(6, 7, 8, 9, 10)) %>%
+  filter(month %in% c(6, 7, 8, 9)) %>%
   group_by(year, month) %>%
   summarise(
     mean.temp = mean(meanTemp, na.rm = TRUE),
@@ -500,33 +583,83 @@ temp_anom_year <- temperature.station %>%
   )
 
 ano.year.temp = ggplot(
-  temp_anom_year %>% filter(year > 2013 & year < 2023),
-  aes(x = factor(year), y = anomaly, fill = anomaly > 0)
+  temp_anom_year %>% filter(year > 2013 & year < 2024)
 ) +
-  geom_col(width = 0.1) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_rect(
+    data = shade_df_factor,
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = type),
+    inherit.aes = FALSE,
+    alpha = 0.1
+  ) +
   scale_fill_manual(
-    values = c("steelblue", "firebrick"),
+    values = c(
+      "Mast year" = "black",
+      "Induction year" = "cyan"
+    )
+  ) +
+  ggnewscale::new_scale_fill() +
+  geom_col(
+    aes(x = year, y = anomaly, fill = anomaly > 0),
+    width = 0.1
+  ) +
+  scale_fill_manual(
+    values = c(
+      "FALSE" = "steelblue",
+      "TRUE" = "firebrick"
+    ),
     labels = c("Cooler", "Warmer"),
     name = ""
   ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
   labs(
     x = "",
     y = "Growing season \nT anom. (°C)"
   ) +
-  theme(
-    axis.text.x = element_text(vjust = .5),
-    legend.position = c(.7, .4)
+  #ylim(-1, .5) +
+  scale_x_continuous(
+    breaks = 2014:2023
   ) +
-  ylim(-1, .5)
+  guides(fill = guide_legend(ncol = 2), color = "none") +
+  theme(legend.position = "bottom")
 ano.year.temp
 
-cowplot::save_plot(
-  'figuresR/anomalie_temp.pdf',
-  ano.year.temp,
-  nrow = .5,
-  ncol = 2.2
+common_x <- scale_x_continuous(
+  breaks = 2014:2023,
+  labels = 2014:2023,
+  limits = c(2013, 2024),
+  expand = c(0, 0)
 )
+
+
+Figure.combo.pres.1 = (plotflointensity +
+  common_x +
+  themesize) /
+  (daily.temp + common_x + themesize) /
+  (ano.year.temp + common_x + themesize) #+
+#plot_annotation(tag_levels = 'A')
+
+Figure.combo.pres.1 <- ((plotflointensity +
+  common_x +
+  themesize) /
+  (daily.temp + common_x + themesize) /
+  (ano.year.temp + common_x + themesize)) +
+  plot_layout(heights = c(3, 1.3, 1.3))
+
+Figure.combo.pres.1
+
+cowplot::save_plot(
+  'figuresR/Figure.presentation.pdf',
+  Figure.combo.pres.1,
+  nrow = 1.8,
+  ncol = 2
+)
+
+# cowplot::save_plot(
+#   'figuresR/anomalie_temp.pdf',
+#   ano.year.temp,
+#   nrow = .5,
+#   ncol = 2.2
+# )
 
 #just small betaregregresison
 small.model.flo.anomalies = average.flo.intensity.individual %>%
@@ -535,12 +668,42 @@ small.model.flo.anomalies = average.flo.intensity.individual %>%
     flo.mean.y = y.transf.betareg(flowering.percentage / 100),
     factor.TreeID = as.factor(TreeID)
   )
-summary(glmmTMB::glmmTMB(
+mod = glmmTMB::glmmTMB(
   flo.mean.y ~ anomaly + (1 | factor.TreeID),
   data = small.model.flo.anomalies,
   family = glmmTMB::beta_family()
-))
+)
+summary(mod)
+plot(ggeffects::ggpredict(mod), show_data = T)
 
+mod = glmmTMB::glmmTMB(
+  fac.mastONOFF ~ anomaly + (1 | factor.TreeID),
+  data = small.model.flo.anomalies %>%
+    mutate(fac.mastONOFF = as_factor(if_else(flowering.percentage > 0, 1, 0))),
+  family = binomial(link = "logit")
+)
+summary(mod)
+confint(mod)
+exp(fixef(mod)$cond)
+exp(0.3803444 + 0.2106200 * -1) / (1 + (exp(0.3803444 + 0.2106200 * -1)))
+exp(0.3803444 + 0.2106200 * 0) / (1 + (exp(0.3803444 + 0.2106200 * 0)))
+exp(0.3803444 + 0.2106200 * 0.5) / (1 + (exp(0.3803444 + 0.2106200 * 0.5)))
+broom.mixed::tidy(mod, conf.int = TRUE, exponentiate = TRUE, effects = "fixed")
+
+#A 1°C increase in anomaly increased the odds of flowering by 4.6-fold.
+#rplot(simulateResiduals(mod))
+prob.flower.plot. = plot(ggeffects::ggpredict(mod), show_data = T) +
+  xlab("Growing season \nT anom. (°C)") +
+  ylab("Probability of flowering") +
+  ggtitle("") +
+  ggpubr::theme_pubr()
+prob.flower.plot.
+cowplot::save_plot(
+  'figuresR/Figure.prob.flo.pdf',
+  prob.flower.plot.,
+  nrow = 1,
+  ncol = .7
+)
 
 #####################################
 #Data combination and analysis for seasonal variation - gene by gene using clustering and heatmaps
@@ -640,7 +803,8 @@ ht <- Heatmap(
   row_km = 4, # like cutree_rows = 2, i initially put two, but I checked and seems that 4 better
   column_split = years, # 4-column blocks by year
   column_labels = as.character(months), # show 6,7,8,9 under each column
-  column_gap = unit(.5, "mm"),
+  column_gap = unit(.3, "mm"),
+  row_gap = unit(.3, "mm"),
   show_row_names = FALSE,
   column_names_rot = 0,
   column_names_centered = TRUE,
@@ -650,15 +814,16 @@ ht <- Heatmap(
   heatmap_legend_param = list(
     title = "z values",
     title_position = "topcenter",
-    legend_direction = "horizontal" # Makes the color bar horizontal
+    legend_direction = "vertical" # Makes the color bar horizontal
   )
 )
 #draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+#pdf("figuresR/pheatmap.all.pdf", width = 9, height = 3)
 pdf("figuresR/pheatmap.all.pdf", width = 9, height = 3)
 draw(
   ht,
-  heatmap_legend_side = "bottom",
-  annotation_legend_side = "bottom"
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right"
 )
 dev.off()
 
@@ -894,7 +1059,7 @@ flowering.genes.tair.qseqid = blastparabidopsis %>%
       mutate(F.crenata = as.numeric(F.crenata)) %>%
       filter(F.crenata > 0),
     by = c("Tair.up" = "AT_gene_id")
-  ) %>% #limit to flo genes
+  ) %>%
   dplyr::rename(sseqid = gene) %>%
   left_join(
     isoform.cleand %>%
@@ -902,15 +1067,23 @@ flowering.genes.tair.qseqid = blastparabidopsis %>%
       dplyr::select(qseqid, sseqid) %>%
       distinct()
   ) %>%
+
   group_by(Gene_name_Original) %>%
-  mutate(n = n()) %>%
+
+  mutate(
+    n = n(),
+    duplicate_id = row_number()
+  ) %>%
+
   mutate(
     Gene_name_Original_new = ifelse(
       n > 1,
-      paste0(Gene_name_Original, "_", row_number()),
+      paste0(Gene_name_Original, "_", duplicate_id),
       Gene_name_Original
     )
-  )
+  ) %>%
+
+  ungroup()
 
 
 #calculate the metric for flowering time series now
@@ -966,6 +1139,19 @@ cv_sync_toghether <- gene.cv.syncro %>%
 #  here::here("data_clean", "cv_sync_together.csv")
 #)
 
+top_cv_sync_figure1_hex <-
+  bind_rows(
+    cv_sync_toghether %>%
+      drop_na(Gene_name_Original_new) %>%
+      slice_max(order_by = kCV, n = 5) %>%
+      mutate(selection = "Top kCV"),
+    cv_sync_toghether %>%
+      drop_na(Gene_name_Original_new) %>%
+      slice_max(order_by = mean_synchrony, n = 5) %>%
+      mutate(selection = "Top synchrony")
+  ) %>%
+  dplyr::select(Gene_name_Original)
+
 Figure.variability.sync.gene.exp = ggplot(
   cv_sync_toghether,
   aes(y = kCV, x = mean_synchrony)
@@ -974,16 +1160,42 @@ Figure.variability.sync.gene.exp = ggplot(
   scale_fill_viridis_c(option = "mako", direction = -1) +
   geom_point(
     data = cv_sync_toghether %>%
-      #filter(str_detect(schemes, "Flower|flower")) %>%
-      drop_na(Gene_name_Original_new),
-    aes(col = Gene_name_Original_new)
+      right_join(top_cv_sync_figure1_hex) %>%
+      group_by(Gene_name_Original) %>%
+      mutate(
+        n = n(),
+        duplicate_id = row_number()
+      ) %>%
+      mutate(
+        Gene_name_Original_new_2 = ifelse(
+          n > 1,
+          paste0(Gene_name_Original, "_", duplicate_id),
+          Gene_name_Original
+        )
+      ) %>%
+      ungroup() %>%
+      dplyr::select(-duplicate_id, -n),
+    aes(col = Gene_name_Original_new_2)
   ) +
   geom_text_repel(
     data = cv_sync_toghether %>%
-      #filter(str_detect(schemes, "Flower|flower")) %>%
-      drop_na(Gene_name_Original_new),
-    aes(label = Gene_name_Original_new, col = Gene_name_Original_new),
-    size = 3,
+      right_join(top_cv_sync_figure1_hex) %>%
+      group_by(Gene_name_Original) %>%
+      mutate(
+        n = n(),
+        duplicate_id = row_number()
+      ) %>%
+      mutate(
+        Gene_name_Original_new_2 = ifelse(
+          n > 1,
+          paste0(Gene_name_Original, "_", duplicate_id),
+          Gene_name_Original
+        )
+      ) %>%
+      ungroup() %>%
+      dplyr::select(-duplicate_id, -n),
+    aes(label = Gene_name_Original_new_2, col = Gene_name_Original_new_2),
+    size = 5,
     max.overlaps = 50,
     fontface = "bold"
   ) +
@@ -1001,15 +1213,143 @@ Figure.variability.sync.gene.exp = ggplot(
     size = 4
   )
 
-Figure.variability.sync.gene.exp
 
 cowplot::save_plot(
   'figuresR/Figure.variability.sync.gene.exp.pdf',
-  Figure.variability.sync.gene.exp,
+  Figure.variability.sync.gene.exp +
+    theme(
+      axis.text = element_text(size = 16),
+      axis.title = element_text(size = 16)
+    ),
+  nrow = 1.7,
+  ncol = 1.
+)
+
+#statistic on schmes
+stats.metric.scheme.flogenes = cv_sync_toghether %>%
+  drop_na(schemes) %>%
+  mutate(schemes = strsplit(schemes, "\\|")) %>% # split on "|"
+  unnest(schemes) %>% # one row per scheme
+  mutate(schemes = trimws(schemes)) %>%
+  mutate(schemes = if_else(schemes == "Horomones", "Hormones", schemes))
+
+scheme.kCV = ggplot(
+  stats.metric.scheme.flogenes,
+  aes(x = reorder(schemes, kCV, mean), y = kCV, fill = schemes)
+) +
+  geom_boxplot(outlier.alpha = 0.4, width = 0.5, alpha = .9) +
+  geom_jitter(width = 0.15, alpha = 0.2, size = 1.2) +
+  labs(, x = "", y = "kCV") +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 35, hjust = 1)
+  ) +
+  ggsci::scale_color_aaas() +
+  ggsci::scale_fill_aaas()
+
+schem.sync = ggplot(
+  stats.metric.scheme.flogenes,
+  aes(
+    x = reorder(schemes, mean_synchrony, mean),
+    y = mean_synchrony,
+    fill = schemes
+  )
+) +
+  geom_boxplot(outlier.alpha = 0.4, width = 0.5, alpha = .9) +
+  geom_jitter(width = 0.15, alpha = 0.2, size = 1.2) +
+  labs(, x = "Scheme", y = "Synchrony") +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 35, hjust = 1)
+  ) +
+  ggsci::scale_color_aaas() +
+  ggsci::scale_fill_aaas()
+
+schemes.combines = scheme.kCV / schem.sync
+schemes.combines
+cowplot::save_plot(
+  'figuresR/Figure.scheme.flogenes.pdf',
+  schemes.combines,
   nrow = 1.6,
   ncol = 1
 )
 
+kw_cv <- kruskal.test(kCV ~ schemes, data = stats.metric.scheme.flogenes)
+print(kw_cv)
+kw_sync <- kruskal.test(
+  mean_synchrony ~ schemes,
+  data = stats.metric.scheme.flogenes
+)
+print(kw_sync)
+dunn_synch <- FSA::dunnTest(
+  mean_synchrony ~ schemes,
+  data = stats.metric.scheme.flogenes,
+  method = "bh"
+)
+print(dunn_synch)
+summary_schemes <- stats.metric.scheme.flogenes %>%
+  group_by(schemes) %>%
+  summarise(
+    n = n(),
+    median_cv = median(kCV, na.rm = TRUE),
+    median_synch = median(mean_synchrony, na.rm = TRUE),
+    mean_cv = mean(kCV, na.rm = TRUE),
+    mean_synch = mean(mean_synchrony, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(median_cv))
+summary_schemes
+unique(stats.metric.scheme.flogenes$Gene_name_Original)
+unique(stats.metric.scheme.flogenes$Gene_name_Original_new)
+
+dunn_df_synch <- dunn_synch$res %>%
+  as.data.frame() %>%
+  # Split "SchemeA - SchemeB" into two separate columns
+  separate(Comparison, into = c("Group1", "Group2"), sep = " - ") %>%
+  mutate(
+    sig_label = case_when(
+      P.adj < 0.001 ~ "***",
+      P.adj < 0.01 ~ "**",
+      P.adj < 0.05 ~ "*",
+      TRUE ~ "ns"
+    ),
+    significant = P.adj < 0.05
+  )
+
+dunn_sym <- bind_rows(
+  dunn_df_synch,
+  dunn_df_synch %>% dplyr::rename(Group1 = Group2, Group2 = Group1)
+)
+
+ggplot(dunn_sym, aes(x = Group1, y = Group2, fill = P.adj)) +
+
+  geom_tile(color = "white", linewidth = 0.5) +
+
+  geom_text(aes(label = sig_label), size = 4, fontface = "bold") +
+
+  scale_fill_gradientn(
+    colours = c("#d73027", "#fc8d59", "#fee090", "#e0f3f8", "#91bfdb"),
+    values = scales::rescale(c(0, 0.001, 0.01, 0.05, 1)),
+    limits = c(0, 1),
+    name = "Adjusted\np-value"
+  ) +
+
+  labs(
+    title = "Dunn Test — Pairwise Comparisons of Synchrony by Scheme",
+    subtitle = "* p<0.05  ** p<0.01  *** p<0.001  ns = not significant",
+    x = NULL,
+    y = NULL
+  ) +
+
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "right"
+  )
 #####################################
 #Data combination and analysis for seasonal variation in relation to flowering - gene by gene using regression
 #####################################
@@ -1238,10 +1578,12 @@ count.best.seson.model = subset.best.logistic.reg %>%
   tally() %>%
   ggplot(aes(n, x = best.windows, col = best.windows, fill = best.windows)) +
   geom_col() +
-  coord_flip() +
-  scale_color_viridis_d(option = "mako") +
-  scale_fill_viridis_d(option = "mako") +
-  theme(legend.position = "none") +
+  #coord_flip() +
+  #scale_color_viridis_d(option = "mako") +
+  #scale_fill_viridis_d(option = "mako") +
+  scale_colour_manual(values = less.vivid.color) +
+  scale_fill_manual(values = less.vivid.color) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90)) +
   xlab("Best windows") +
   ylab("Count")
 
@@ -1259,32 +1601,37 @@ model.fit.aucaiclog = ggplot(
   subset.best.logistic.reg,
   aes(x = AIC, y = AUC, col = best.windows, fill = best.windows)
 ) +
-  geom_point(alpha = .3, shape = 21, stroke = 1, size = 1) +
+  geom_point(shape = 21, stroke = 1, size = 1, alpha = .9) +
   #geom_hline(yintercept = 0.5, col = "black", linetype = "dashed") +
   geom_hline(yintercept = 0.8, col = "black", linetype = "dashed") +
   labs(color = "Best windows", fill = "Best windows") +
   ylab("Area under the ROC curve (AUC)") +
   xlab("Akaike information criterion (AIC)") +
-  scale_color_viridis_d(option = "mako") +
-  scale_fill_viridis_d(option = "mako") +
+  #scale_color_viridis_d(option = "mako") +
+  #scale_fill_viridis_d(option = "mako") +
+  scale_colour_manual(values = less.vivid.color) +
+  scale_fill_manual(values = less.vivid.color) +
   theme(legend.position = "bottom")
 
-FigureSup.model.fit = model.fit.aucaiclog +
-  count.best.seson.model
+FigureSup.model.fit = (model.fit.aucaiclog +
+  theme(legend.position = "none") +
+  themesize) +
+  count.best.seson.model +
+  themesize
 FigureSup.model.fit
 
 cowplot::save_plot(
   'figuresR/FigureSup.model.fit.pdf',
   FigureSup.model.fit,
-  nrow = 1.8,
-  ncol = 1.8
+  nrow = 1.4,
+  ncol = 1.6
 )
-#I Save also as png for easier viewing on inkskape
+# #I Save also as png for easier viewing on inkskape
 cowplot::save_plot(
   'figuresR/FigureSup.model.fit.png',
-  FigureSup.model.fit + theme(legend.position = "none"),
-  nrow = 1.8,
-  ncol = 1.8
+  FigureSup.model.fit,
+  nrow = 1.4,
+  ncol = 1.6
 )
 
 #now same as beta reg , add new columns
@@ -1305,7 +1652,7 @@ subset.best.month.reg <- subset.best.logistic.reg %>%
 filtered_data.genes.leaves.monthly <- data.genes.leaves.monthly %>%
   inner_join(
     subset.best.month.reg %>%
-      select(qseqid, months_list, best.windows, n_months) %>%
+      dplyr::select(qseqid, months_list, best.windows, n_months) %>%
       distinct(),
     by = "qseqid"
   ) %>%
@@ -1313,6 +1660,49 @@ filtered_data.genes.leaves.monthly <- data.genes.leaves.monthly %>%
   filter(month %in% months_list) %>%
   ungroup()
 
+#for the figure test
+window_df <- tibble(window_months = correct_window) %>%
+  mutate(month = str_split(window_months, "-")) %>%
+  unnest(month) %>%
+  mutate(month = as.integer(month))
+gene_window_year_mean_flc_example <- data.genes.leaves.monthly %>%
+  filter(qseqid == "Facr_v2.5_s1cl026553") %>%
+  mutate(month = as.integer(month)) %>%
+  inner_join(window_df, by = "month") %>%
+  group_by(qseqid, TreeID, year, window_months) %>%
+  summarise(
+    individual_mean_expr = mean(level.exp, na.rm = TRUE),
+    individual_sum_expr = sum(level.exp, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(qseqid, year, window_months) %>%
+  summarise(
+    mean_expr_across_individuals = mean(individual_mean_expr, na.rm = TRUE),
+    sum_expr_across_individuals = mean(individual_sum_expr, na.rm = TRUE),
+    n_individuals = n_distinct(TreeID),
+    .groups = "drop"
+  )
+
+ggplot(
+  gene_window_year_mean_flc_example,
+  aes(x = year, y = mean_expr_across_individuals, col = window_months)
+) +
+  geom_line() +
+  scale_color_viridis_d(option = "mako", direction = -1) +
+  ylab("Average gene expression") +
+  xlab("") +
+  theme(axis.text.x = element_blank(), legend.position = "none")
+
+#best FLC
+ggplot(
+  gene_window_year_mean_flc_example %>% filter(window_months == "7-8-9"),
+  aes(x = year, y = mean_expr_across_individuals, col = window_months)
+) +
+  geom_line() +
+  scale_color_viridis_d(option = "mako", direction = 1) +
+  ylab("Average gene expression") +
+  xlab("") +
+  theme(axis.text.x = element_blank(), legend.position = "none")
 #here I will sum the gene expression each genes to the best window
 #and combine it to flowering intensity
 #####################################################################
@@ -1337,7 +1727,7 @@ filtered_data.genes.leaves.yearly.mastfruiting <- filtered_data.genes.leaves.mon
 #and then create matrix for boruta
 var.of.interest = "cumsum_expr"
 gene.masting.wide <- filtered_data.genes.leaves.yearly.mastfruiting %>%
-  select(
+  dplyr::select(
     TreeID,
     year,
     qseqid,
@@ -1358,29 +1748,63 @@ response.boruta <- gene.masting.wide$flowering.percentage
 
 #take few minutes
 #based on tutorial, and used "general" setup default arguments
-set.seed(123)
-boruta_result <- Boruta(
-  x = predictors.boruta,
-  y = response.boruta,
-  doTrace = 1,
-  pValue = 0.01,
-  maxRuns = 2000
-)
-boruta_result
-summary(boruta_result)
-plotImpHistory(boruta_result)
-#see all first run are shit which is normal when such
-#super high number of predictors
-#to increase eventually replace F by True for tentative
-confirmed_genes.fin <- getSelectedAttributes(
-  boruta_result,
-  withTentative = T
-)
-table(boruta_result$finalDecision)
+boruta.run = FALSE
+if (boruta.run == T) {
+  set.seed(123)
+  boruta_result <- Boruta(
+    x = predictors.boruta,
+    y = response.boruta,
+    doTrace = 1,
+    pValue = 0.01,
+    maxRuns = 2000
+  )
+  boruta_result
+  summary(boruta_result)
+  plotImpHistory(boruta_result)
+  #see all first run are shit which is normal when such
+  #super high number of predictors
+  #to increase eventually replace F by True for tentative
+  confirmed_genes.fin <- getSelectedAttributes(
+    boruta_result,
+    withTentative = T
+  )
+  table(boruta_result$finalDecision)
 
-importance.features <- attStats(boruta_result)
-importance.features
-isoform
+  importance.features <- attStats(boruta_result)
+  importance.features
+  isoform
+  #Ok after the parenthesis using smaller subset of genes
+  clean_Bor.hvo <- reshape_the_Boruta_data(
+    boruta_result,
+    filter.output = T,
+    select.features = confirmed_genes.fin
+  )
+
+  fin.ml.selection.last = clean_Bor.hvo %>%
+    pivot_longer(everything()) %>%
+    group_by(name) %>%
+    summarise(value.imp.mean = mean(value)) %>%
+    dplyr::select(name, value.imp.mean) %>%
+    left_join(
+      isoform.cleand %>%
+        dplyr::select(name, ProteinName, sseqid)
+    ) %>%
+    left_join(blastparabidopsis %>% dplyr::rename(sseqid = gene)) %>%
+    arrange((value.imp.mean))
+
+  #write_csv(
+  #  fin.ml.selection.last,
+  #  "/Users/valentinjourne/Dropbox/F_crenata/temporary_results2025/outputs.genes.importance.December2025.csv"
+  #)
+} else {
+  #here is the file I shared to Yuka, 7th April 2026
+  #based on my last run
+  #the final list will be the same , just sometimes I got more isoforms
+  #and it is easier for next steps to stick to one file
+  fin.ml.selection.last = read_csv(
+    "/Users/valentinjourne/Dropbox/F_crenata/temporary_results2025/outputs.genes.importance.December2025.csv"
+  )
+}
 
 #I got the criticism fair that I have way too
 #much predictors for small nb of obser (more X than y obs)
@@ -1417,7 +1841,7 @@ if (run.smaller.ml.boruta == T) {
     left_join(average.flo.intensity.individual)
 
   gene.masting.wide.smaller.predictors <- filtered_data.genes.leaves.yearly.mastfruiting.smaller.predictors %>%
-    select(
+    dplyr::select(
       TreeID,
       year,
       #best.windows,
@@ -1433,7 +1857,7 @@ if (run.smaller.ml.boruta == T) {
     )
 
   predictors.boruta.smaller.predictors <- gene.masting.wide.smaller.predictors %>%
-    select(-TreeID, -year, -flowering.percentage)
+    dplyr::select(-TreeID, -year, -flowering.percentage)
 
   response.boruta.smaller.predictors <- gene.masting.wide.smaller.predictors$flowering.percentage
   set.seed(123)
@@ -1489,31 +1913,6 @@ if (run.smaller.ml.boruta == T) {
   #6 are not present and 33 are similar (two more in the smaller subset predictors)
 }
 #################################################################################
-
-#Ok after the parenthesis using smaller subset of genes
-clean_Bor.hvo <- reshape_the_Boruta_data(
-  boruta_result,
-  filter.output = T,
-  select.features = confirmed_genes.fin
-)
-
-
-fin.ml.selection.last = clean_Bor.hvo %>%
-  pivot_longer(everything()) %>%
-  group_by(name) %>%
-  summarise(value.imp.mean = mean(value)) %>%
-  dplyr::select(name, value.imp.mean) %>%
-  left_join(
-    isoform.cleand %>%
-      dplyr::select(name, ProteinName, sseqid)
-  ) %>%
-  left_join(blastparabidopsis %>% dplyr::rename(sseqid = gene)) %>%
-  arrange((value.imp.mean))
-
-#write_csv(
-#  fin.ml.selection.last,
-#  "/Users/valentinjourne/Dropbox/F_crenata/temporary_results2025/outputs.genes.importance.December2025.csv"
-#)
 #load the clean one - based on initial test
 #fin.ml.selection.meaning = read_csv(
 #  "/Users/valentinjourne/Dropbox/F_crenata/temporary_results2025/outputs.genes.importance.December2025.csv"
@@ -1595,14 +1994,17 @@ pyearheat.correlation = ComplexHeatmap::pheatmap(
   cluster_rows = my_hclust_gene.correlation,
   cutree_rows = nclustertp,
   cluster_cols = F,
-  annotation_colors = my_colourtp,
-  annotation_row = my_gene_col,
+  show_row_dend = T,
+  #annotation_colors = my_colourtp,
+  #annotation_row = my_gene_col,
   row_names_centered = TRUE,
   show_rownames = TRUE,
-  #main = "Expression level",
+  border_color = "NA",
   fontsize_row = 12,
   fontsize_col = 12,
   heatmap_legend_param = list(
+    #at = c(-5, -2.5, 0, 2.5, 5),
+    #labels = c("-5", "-2.5", "0", "2.5", "5"),
     title = "z values",
     title_position = "topcenter",
     legend_direction = "horizontal" # Makes the color bar horizontal
@@ -1627,39 +2029,75 @@ cowplot::save_plot(
 ro_1 <- row_order(pyearheat.correlation)
 ordered_genes = rownames(data_subset_norm.correlation)[unlist(ro_1)]
 
+#OLD VERSION
+# boruta.outputs = clean_Bor.hvo %>%
+#   pivot_longer(everything()) %>%
+#   dplyr::rename(qseqid = 1) %>%
+#   right_join(
+#     fin.ml.selection.meaning %>%
+#       drop_na(sseqid) %>%
+#       dplyr::select(value.imp.mean, name, Tair.up, Gene_name) %>%
+#       dplyr::rename(qseqid = name),
+#     by = "qseqid" #should have multiple iterations so it is OK
+#   ) %>%
+#   mutate(Gene_name = as_factor(Gene_name)) %>%
+#   mutate(
+#     Gene_name = factor(Gene_name, levels = rev(ordered_genes))
+#   ) %>%
+#   #filter(value != 0) %>% #i removed the 0 because it is noise too many predictors with few observation
+#   ggplot(aes(x = Gene_name, y = value)) +
+#   geom_boxplot(
+#     #outlier.alpha = 0.05,
+#     outlier.shape = NA,
+#     fill = colors.roma.short[4],
+#     col = colors.roma.short[2],
+#     linewidth = .45,
+#     alpha = .7
+#   ) +
+#   coord_flip() +
+#   ylab("Variable importance") +
+#   xlab("") +
+#   scale_x_discrete(expand = c(0, 0)) +
+#   theme(
+#     axis.text.y = element_blank(), #element_text(size = 12),
+#     plot.margin = margin(5.5, 0, 5.5, 5.5)
+#   )
 
-boruta.outputs = clean_Bor.hvo %>%
-  pivot_longer(everything()) %>%
-  dplyr::rename(qseqid = 1) %>%
-  right_join(
-    fin.ml.selection.meaning %>%
-      drop_na(sseqid) %>%
-      dplyr::select(value.imp.mean, name, Tair.up, Gene_name) %>%
-      dplyr::rename(qseqid = name),
-    by = "qseqid" #should have multiple iterations so it is OK
-  ) %>%
+boruta.outputs =
+  fin.ml.selection.meaning %>%
+  drop_na(sseqid) %>%
+  dplyr::select(value.imp.mean, name, Tair.up, Gene_name) %>%
   mutate(Gene_name = as_factor(Gene_name)) %>%
   mutate(
     Gene_name = factor(Gene_name, levels = rev(ordered_genes))
   ) %>%
   #filter(value != 0) %>% #i removed the 0 because it is noise too many predictors with few observation
-  ggplot(aes(x = Gene_name, y = value)) +
-  geom_boxplot(
-    #outlier.alpha = 0.05,
-    outlier.shape = NA,
+  ggplot(aes(x = Gene_name, y = value.imp.mean)) +
+  geom_segment(
+    aes(
+      x = Gene_name,
+      xend = Gene_name,
+      y = 0,
+      yend = value.imp.mean
+    ),
+    color = colors.roma.short[2],
+    alpha = 0.6,
+    linewidth = 0.6
+  ) +
+  geom_point(
     fill = colors.roma.short[4],
     col = colors.roma.short[2],
-    linewidth = .45,
-    alpha = .7
+    size = 3
   ) +
   coord_flip() +
   ylab("Variable importance") +
   xlab("") +
-  scale_x_discrete(expand = c(0, 0)) +
+  #scale_x_discrete(expand = c(0, 0)) +
   theme(
     axis.text.y = element_blank(), #element_text(size = 12),
-    plot.margin = margin(5.5, 0, 5.5, 5.5)
+    plot.margin = margin(0, 0, 0, 0)
   )
+
 boruta.outputs
 
 cowplot::save_plot(
@@ -1725,6 +2163,11 @@ combineGO.CVgenes %>%
   count(GO_ID) %>%
   summarise(mean_terms = mean(n), max_terms = max(n))
 
+#check top genes kCV and Synch
+for.paper.genes.list = combineGO.CVgenes %>%
+  dplyr::select(qseqid, CV, kCV, mean_synchrony, Category_kCV, AUC, TAIR.ID) %>%
+  distinct()
+write_csv(for.paper.genes.list, "for.paper.genes.list.csv")
 
 summary_table = GO_analysis(
   list.genes = list.genes.cv %>% filter(AUC > .8), #here is my full list of genes
@@ -1758,8 +2201,8 @@ colors.pvalues <- colorRampPalette(c(
   "#6BAED6",
   "#4292C6",
   "#2171B5",
-  "#08519C",
-  "#08306B"
+  "#08519C" #,
+  #"#08306B"
 ))(100)
 
 top.5.GO.analysis = data.final.top.gene.GO.function %>%
@@ -1922,15 +2365,26 @@ label_df_oas.flo <- genes.temporal.filtering %>%
 
 all.genes.figures.exp.time = ggplot(
   genes.temporal.filtering %>%
-    drop_na(sseqid),
+    drop_na(sseqid) %>%
+    mutate(TreeID = as.numeric(TreeID)) %>%
+    arrange(TreeID) %>%
+    mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+    mutate(TreeID = as_factor(TreeID)),
   aes(
     x = interaction(month, year),
     y = level.exp,
-    group = TreeID
+    group = TreeID,
+    col = TreeID
   )
 ) +
-  facet_wrap(~Gene_name, scales = "free_y", ncol = 4) +
-  geom_line(alpha = 0.8) +
+  ggh4x::facet_wrap2(
+    ~Gene_name,
+    scales = "free_y",
+    ncol = 4,
+    remove_labels = T,
+    axes = TRUE
+  ) +
+  #facet_wrap(~Gene_name, scales = "free_y", ncol = 4) +
   scale_x_discrete(
     limits = x_levels,
     labels = x_labels
@@ -1938,7 +2392,7 @@ all.genes.figures.exp.time = ggplot(
   theme_minimal(base_size = 12) +
   ggpubr::theme_pubr() +
   xlab("") +
-  ylab("Gene expression (tpm)") +
+  ylab("Expression level (TPM)") +
   #hrbrthemes::theme_ipsum(base_size = 14, axis_title_size = 16) +
   theme(
     axis.text.x = element_text(angle = 90, vjust = 0.5, size = 12),
@@ -1952,39 +2406,42 @@ all.genes.figures.exp.time = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
+  geom_line(alpha = 0.8) +
   theme(
     axis.text.x = element_text(vjust = 0.5, size = 12, angle = 90),
     axis.text.y = element_text(size = 12),
     axis.title = element_text(size = 16),
     strip.text = element_text(face = "bold", size = 12),
     panel.grid.minor = element_blank(),
-    legend.position = "none",
+    legend.position = "top",
     strip.background = element_blank()
-  )
+  ) +
+  scale_color_manual(values = TreeID.color.pal) +
+  scale_fill_manual(values = TreeID.color.pal)
 all.genes.figures.exp.time
 
 cowplot::save_plot(
   'figuresR/All.Boruta.Genes.pdf',
   all.genes.figures.exp.time,
-  nrow = 3,
-  ncol = 3
+  nrow = 4,
+  ncol = 2
 )
 
 #now general expression over time
@@ -1998,7 +2455,11 @@ genes.temporal.filtering.oas.flo.sub = genes.temporal.filtering %>%
       str_detect(Gene_name, "APR|PQ|LSU|SDI|TAA|SHM7") ~ "OAS cluster genes",
       TRUE ~ "Others"
     )
-  )
+  ) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+  mutate(TreeID = as_factor(TreeID))
 
 genes.temporal.filtering.oas.flo.sub1 = genes.temporal.filtering.oas.flo.sub %>%
   filter(group.genes %in% c("Flowering genes", "OAS cluster genes")) %>%
@@ -2019,10 +2480,10 @@ genes.temporal.filtering.oas.flo.sub1 = genes.temporal.filtering.oas.flo.sub %>%
       Gene_name,
       levels = c(
         "FT",
-        "APR1",
-        "APR_3",
-        "LSU2",
         "SDI1_1",
+        "LSU2",
+        "APR_3",
+        "APR1",
         "FLC",
         "SDI2",
         "SHM7/MSA1",
@@ -2032,10 +2493,10 @@ genes.temporal.filtering.oas.flo.sub1 = genes.temporal.filtering.oas.flo.sub %>%
           unique(Gene_name),
           c(
             "FT",
-            "APR1",
-            "APR_3",
-            "LSU2",
             "SDI1_1",
+            "LSU2",
+            "APR_3",
+            "APR1",
             "FLC",
             "SDI2",
             "SHM7/MSA1",
@@ -2050,10 +2511,10 @@ genes.temporal.filtering.oas.flo.sub1 = genes.temporal.filtering.oas.flo.sub %>%
     Gene_name %in%
       c(
         "FT",
-        "APR1",
-        "APR_3",
-        "LSU2",
         "SDI1_1",
+        "LSU2",
+        "APR_3",
+        "APR1",
         "FLC",
         "SDI2",
         "SHM7/MSA1",
@@ -2068,6 +2529,8 @@ label_df_oas.flo.all <- genes.temporal.filtering.oas.flo.sub1 %>%
   slice_tail(n = 1) %>% # safety in case of ties
   ungroup()
 
+library(lemon)
+
 oas.flo.exp = ggplot(
   genes.temporal.filtering.oas.flo.sub1,
   aes(
@@ -2081,36 +2544,42 @@ oas.flo.exp = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
+    fill = "cyan",
     alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
+    fill = "cyan",
     alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey30",
+    fill = "cyan",
     alpha = 0.1
   ) +
   geom_line() +
-  facet_wrap(~Gene_name, scales = "free_y", nrow = 2) +
+  ggh4x::facet_wrap2(
+    ~Gene_name,
+    scales = "free_y",
+    nrow = 2,
+    remove_labels = T,
+    axes = TRUE
+  ) +
   theme_minimal() +
   xlab("") +
   ylab("Gene expression (tpm)") +
   ggpubr::theme_pubr() +
   theme(
-    axis.text.x = element_text(vjust = 0.5, size = 12, angle = 45),
+    axis.text.x = element_text(vjust = 0.5, size = 12, angle = 90),
     axis.text.y = element_text(size = 12),
     axis.title = element_text(size = 14),
-    strip.text = element_text(face = "bold", size = 12),
+    strip.text = element_text(size = 12),
     panel.grid.minor = element_blank(),
-    legend.position = "none",
+    legend.position = "bottom",
     strip.background = element_blank()
   ) +
   scale_x_discrete(
@@ -2124,8 +2593,8 @@ oas.flo.exp
 cowplot::save_plot(
   'figuresR/Figure.timesseries.OASFlo.pdf',
   oas.flo.exp,
-  nrow = 1,
-  ncol = 2
+  nrow = 1.6,
+  ncol = 2.1
 )
 # #second option
 # data.new.scaled.oas.flo = genes.temporal.filtering.oas.flo.sub %>%
@@ -2225,7 +2694,12 @@ cowplot::save_plot(
 #PLOT FOR FLC AND FT
 
 FLC.plot = ggplot(
-  genes.temporal.filtering.oas.flo.sub1 %>% filter(Gene_name == "FLC"),
+  genes.temporal.filtering.oas.flo.sub1 %>%
+    filter(Gene_name == "FLC") %>%
+    mutate(TreeID = as.numeric(TreeID)) %>%
+    arrange(TreeID) %>%
+    mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+    mutate(TreeID = as_factor(TreeID)),
   aes(x = interaction(month, year), y = level.exp, group = TreeID, col = TreeID)
 ) +
   geom_line() +
@@ -2252,29 +2726,34 @@ FLC.plot = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   scale_color_manual(values = TreeID.color.pal) +
   scale_fill_manual(values = TreeID.color.pal)
 FLC.plot
 
 FT.plot = ggplot(
-  genes.temporal.filtering.oas.flo.sub1 %>% filter(Gene_name == "FT"),
+  genes.temporal.filtering.oas.flo.sub1 %>%
+    filter(Gene_name == "FT") %>%
+    mutate(TreeID = as.numeric(TreeID)) %>%
+    arrange(TreeID) %>%
+    mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+    mutate(TreeID = as_factor(TreeID)),
   aes(x = interaction(month, year), y = level.exp, group = TreeID, col = TreeID)
 ) +
   geom_line() +
@@ -2301,22 +2780,22 @@ FT.plot = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   scale_color_manual(values = TreeID.color.pal) +
   scale_fill_manual(values = TreeID.color.pal)
@@ -2331,6 +2810,18 @@ cowplot::save_plot(
   expressionFTFLC,
   nrow = .8,
   ncol = 1.5
+)
+cowplot::save_plot(
+  'figuresR/FigureFLC.pdf',
+  FLC.plot,
+  nrow = .8,
+  ncol = .6
+)
+cowplot::save_plot(
+  'figuresR/FigureFT.pdf',
+  FT.plot,
+  nrow = .8,
+  ncol = .6
 )
 
 #additional time series for other important genes
@@ -2353,7 +2844,11 @@ genes.temporal.bsp = bsp.list %>%
       timepoint,
       levels = unique(timepoint[order(year, month)])
     )
-  )
+  ) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+  mutate(TreeID = as_factor(TreeID))
 
 BSP.plot = ggplot(
   genes.temporal.bsp %>% drop_na(),
@@ -2384,22 +2879,22 @@ BSP.plot = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   xlab("") +
   ylab("Gene expression (tpm)") +
@@ -2410,7 +2905,7 @@ cowplot::save_plot(
   'figuresR/FigureBSP.pdf',
   BSP.plot,
   nrow = .8,
-  ncol = 1.5
+  ncol = 1.2
 )
 
 #mainenant for slim 1
@@ -2427,7 +2922,11 @@ slim1.list = isoform.cleand %>%
       timepoint,
       levels = unique(timepoint[order(year, month)])
     )
-  )
+  ) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+  mutate(TreeID = as_factor(TreeID))
 
 unique(slim1.list$qseqid)
 
@@ -2458,29 +2957,31 @@ slim1.plot = ggplot(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_line() +
   xlab("") +
   ylab("Gene expression (tpm)") +
   scale_color_manual(values = TreeID.color.pal) +
-  scale_fill_manual(values = TreeID.color.pal)
+  scale_fill_manual(values = TreeID.color.pal) +
+  theme(legend.position = "none")
 slim1.plot
+
 cowplot::save_plot(
   'figuresR/FigureSLIM1.pdf',
   slim1.plot,
@@ -2492,6 +2993,7 @@ cowplot::save_plot(
 #FLC the other version of the genes 2
 sub.flc.2version = data.genes.all %>%
   filter(Tissue == "L") %>%
+  filter(month != 10) %>%
   dplyr::rename(name = qseqid) %>%
   right_join(
     isoform.cleand %>%
@@ -2502,8 +3004,8 @@ sub.flc.2version = data.genes.all %>%
             #"Facr_v2.5_s1cl064033",
             #"Facr_v2.5_s1cl064034",
             #"Facr_v2.5_s1cl067823",
-            #"Facr_v2.5_s1cl067824"
-            "Facr_v2.5_s1cl076318"
+            "Facr_v2.5_s1cl067824" #,
+            #"Facr_v2.5_s1cl076318"
           )
       )
   ) %>%
@@ -2514,7 +3016,11 @@ sub.flc.2version = data.genes.all %>%
       levels = unique(timepoint[order(year, month)])
     )
   ) %>%
-  drop_na(IndexNo) #remove the missing ones
+  drop_na(IndexNo) %>%
+  mutate(TreeID = as.numeric(TreeID)) %>%
+  arrange(TreeID) %>%
+  mutate(TreeID = as.numeric(as.factor(TreeID))) %>%
+  mutate(TreeID = as_factor(TreeID)) #remove the missing ones
 
 plot.FLC2 = ggplot(
   sub.flc.2version,
@@ -2539,26 +3045,27 @@ plot.FLC2 = ggplot(
     legend.position = "none",
     strip.background = element_blank()
   ) +
+  #facet_grid(. ~ name) +
   geom_rect(
     data = highlight_2014,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2017,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   geom_rect(
     data = highlight_2021,
     aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
     inherit.aes = FALSE,
-    fill = "grey",
-    alpha = 0.2
+    fill = "cyan",
+    alpha = 0.1
   ) +
   xlab("") +
   ylab("Gene expression (tpm)") +
@@ -2573,6 +3080,36 @@ cowplot::save_plot(
   ncol = .6
 )
 
+data.flc.ft = sub.flc.2version %>%
+  filter(month != 10) %>%
+  mutate(Gene_name = "FLC2") %>%
+  dplyr::select(
+    TreeID,
+    Gene_name,
+    month,
+    year,
+    timepoint,
+    Gene_name,
+    level.exp
+  ) %>%
+  bind_rows(
+    genes.temporal.filtering.oas.flo.sub1 %>%
+      ungroup %>%
+      filter(Gene_name %in% c("FT", "FLC")) %>%
+      dplyr::select(
+        TreeID,
+        Gene_name,
+        month,
+        year,
+        timepoint,
+        Gene_name,
+        level.exp
+      )
+  ) %>%
+  pivot_wider(names_from = Gene_name, values_from = level.exp)
+
+
+ggplot(data.flc.ft, aes(x = FLC, FT)) + geom_point()
 ######################################
 genes.satake <- c(
   "AT5G48850",
@@ -2643,17 +3180,82 @@ amino.acid.xylem = format.amino.acid.long(AA.Xylem) %>%
   mutate(Tissue = "XYLEM") %>%
   mutate(Sample = str_remove(Sample, 'X'))
 
-# aggregate.aa.tissue = bind_rows(amino.acid.phloem, amino.acid.xylem) %>%
-#   mutate(Year = lubridate::year(Date)) %>%
-#   filter(Year < 2023) %>%
-#   group_by(Date, Year, Month, Compound, Tissue) %>%
-#   summarise(
-#     mean.value = mean(Value, na.rm = T),
-#     median.value = median(Value, na.rm = T),
-#     sd = sd(Value, na.rm = T)
-#   ) %>%
-#   ungroup() %>%
-#   mutate(Year.chr = as.character(Year))
+aggregate.aa.tissue = bind_rows(amino.acid.phloem, amino.acid.xylem) %>%
+  mutate(month = lubridate::month(Date), year = lubridate::year(Date)) %>%
+  filter(Compound %in% c("NH4+", "NO3-")) %>%
+  filter(year < 2023) %>%
+  group_by(Date, year, month, Compound, Tissue) %>%
+  #filter(month %in% c(6, 7, 8, 9)) %>%
+  summarise(
+    mean = mean(Value, na.rm = T),
+    median.value = median(Value, na.rm = T),
+    sd = sd(Value, na.rm = T),
+    se = std.error(Value)
+  ) %>%
+  ungroup() %>%
+  mutate(Year.chr = as.character(year)) %>%
+  mutate(
+    timepoint = paste(month, year, sep = "-"),
+    timepoint = factor(
+      timepoint,
+      levels = unique(timepoint[order(year, month)])
+    )
+  )
+
+amonium.tissue.timeseries.plot = ggplot(
+  aggregate.aa.tissue,
+  aes(x = timepoint, y = mean, fill = Year.chr, col = Year.chr, group = 1)
+) +
+  #geom_boxplot() +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 0.2,
+    linewidth = 0.7
+  ) +
+  ggh4x::facet_wrap2(
+    Tissue ~ Compound,
+    scales = "free_y",
+    nrow = 2,
+    remove_labels = T,
+    axes = TRUE
+  ) +
+  #facet_grid(Tissue ~ Compound, scale = "free_y") +
+  scale_color_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  #scale_color_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  # geom_jitter(
+  #   aes(x = timepoint, y = Value),
+  #   width = 0.08,
+  #   size = 1,
+  #   alpha = 0.3,
+  #   inherit.aes = FALSE
+  # ) +
+  labs(
+    x = "Year",
+    y = "Concentration",
+    fill = "Year"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.text.x = element_text(vjust = 0.5, size = 10, angle = 90),
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  geom_vline(xintercept = "4-2022", linetype = "dotted")
+amonium.tissue.timeseries.plot
+cowplot::save_plot(
+  'figuresR/amonium.tissue.timeseries.plot.pdf',
+  amonium.tissue.timeseries.plot,
+  nrow = 1.2,
+  ncol = .8
+)
+
+#average April to June
+#DO not use only JApril-July
 
 data.cleaned.aa.phloem = amino.acid.phloem %>%
   mutate(Year = lubridate::year(Date)) %>%
@@ -2713,21 +3315,17 @@ data.for.phloem.gsh.totalS = do.stat.element_gsh_sulfate_totalS(
 
 
 phloem.gsh.sulfate = ggplot(
-  data.for.phloem.gsh.totalS$summary_stats,
-  aes(x = Year, y = mean, fill = Year)
+  total.sufur.gsh.clean.phloem,
+  aes(x = Year, y = concentration, fill = Year)
 ) +
-  geom_bar(
-    stat = "identity",
-    width = 0.6,
-    color = "black",
-    linewidth = 0.4,
+  geom_boxplot(
     alpha = .7
   ) +
-  geom_errorbar(
-    aes(ymin = mean - se, ymax = mean + se),
-    width = 0.2,
-    linewidth = 0.7
-  ) +
+  # geom_errorbar(
+  #   aes(ymin = mean - se, ymax = mean + se),
+  #   width = 0.2,
+  #   linewidth = 0.7
+  # ) +
   geom_jitter(
     data = total.sufur.gsh.clean.phloem,
     aes(x = Year, y = concentration),
@@ -2746,7 +3344,7 @@ phloem.gsh.sulfate = ggplot(
   ) +
   facet_wrap(~compound, scales = "free_y") +
   #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
-  scale_fill_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
   labs(
     x = "Year",
     y = "Concentration (µmol/g FW)",
@@ -2839,7 +3437,7 @@ xylem.gsh.sulfate = ggplot(
     inherit.aes = FALSE
   ) +
   facet_wrap(~compound, scales = "free_y") +
-  scale_fill_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
   labs(
     x = "Year",
     y = "Concentration",
@@ -2875,10 +3473,28 @@ data.t.test.N = bind_rows(amino.acid.phloem, amino.acid.xylem) %>%
   mutate(
     log.value = log1p(Value),
     Value.noise = if_else(Value == 0, 0.001, Value)
-  )
+  ) #%>%
+#filter(Month %in% c("Apr", "May", "June", "July"))
 
+data.t.test.N.aggregate = bind_rows(amino.acid.phloem, amino.acid.xylem) %>%
+  mutate(Year = lubridate::year(Date)) %>%
+  filter(Year < 2023) %>%
+  filter(Compound %in% c("NH4+", "NO3-")) %>%
+  mutate(MastONOFF = if_else(Year == 2021, "Mast", "Non-Mast")) %>%
+  mutate(
+    Year = as.factor(Year),
+    Sample = as.factor(Sample),
+    Month = as.factor(Month)
+  ) %>%
+  mutate(
+    log.value = log1p(Value),
+    Value.noise = if_else(Value == 0, 0.001, Value)
+  ) %>%
+  filter(Month %in% c("Apr", "May", "June", "July")) %>%
+  group_by(Year, MastONOFF, Tissue, Sample, Unit, Compound) %>%
+  summarise(Value = mean(Value, na.rm = T), Month = "PreSummer")
 
-sub.data.t.test.NH4 = data.t.test.N %>%
+sub.data.t.test.NH4.x = data.t.test.N.aggregate %>%
   filter(Compound == "NH4+" & Tissue == "XYLEM")
 
 #model.NH4.XYLEM <- glmmTMB(
@@ -2889,44 +3505,54 @@ sub.data.t.test.NH4 = data.t.test.N %>%
 #summary(model.NH4.XYLEM)
 #hist((sub.data.t.test.NH4$Value))
 #twwedie too complex, but trends are the same
+#do this if no aggregate summer
+# model.NH4.XYLEM <- glmmTMB(
+#   log.value ~ Year + (1 | Sample), #+ (1 | Month) #I tried with fixed month, results are same same
+#   data = sub.data.t.test.NH4
+# )
+# summary(model.NH4.XYLEM)
+#emmeans(model.NH4.XYLEM, ~Year)
+#pairs(emmeans(model.NH4.XYLEM, ~Year))
+wilcox.short.test(data = sub.data.t.test.NH4.x)
 
-model.NH4.XYLEM <- glmmTMB(
-  log.value ~ Year + (1 | Sample) + (1 | Month), #I tried with fixed month, results are same same
-  data = sub.data.t.test.NH4
-)
-summary(model.NH4.XYLEM)
-emmeans(model.NH4.XYLEM, ~Year)
-pairs(emmeans(model.NH4.XYLEM, ~Year))
+
 #simulationOutput <- simulateResiduals(fittedModel = model.NH4.XYLEM, plot = F)
 #plot(simulationOutput)
 #shapiro.test(sub.data.t.test.N$Value[sub.data.t.test.N$MastONOFF == "Non-Mast"])
 #wilcox.test(Value ~ MastONOFF, data = sub.data.t.test.N)
 
-sub.data.t.test.NH4.ph = data.t.test.N %>%
+sub.data.t.test.NH4.ph = data.t.test.N.aggregate %>%
   filter(Compound == "NH4+" & Tissue != "XYLEM")
-model.NH4.PHLOEM <- glmmTMB(
-  log.value ~ Year + (1 | Sample) + (1 | Month), #I tried with fixed month, results are same same
-  data = sub.data.t.test.NH4.ph
-)
-summary(model.NH4.PHLOEM)
+# model.NH4.PHLOEM <- glmmTMB(
+#   log.value ~ Year + (1 | Sample), #+ (1 | Month) #I tried with fixed month, results are same same
+#   data = sub.data.t.test.NH4.ph
+# )
+# summary(model.NH4.PHLOEM)
+wilcox.short.test(data = sub.data.t.test.NH4.ph)
 
-sub.data.t.test.NO3.ph = data.t.test.N %>%
+
+sub.data.t.test.NO3.ph = data.t.test.N.aggregate %>%
   filter(Compound == "NO3-" & Tissue != "XYLEM")
-model.NO3.PHLOEM <- glmmTMB(
-  log.value ~ Year + (1 | Sample) + (1 | Month), #I tried with fixed month, results are same same
-  data = sub.data.t.test.NO3.ph
-)
-summary(model.NO3.PHLOEM)
+# model.NO3.PHLOEM <- glmmTMB(
+#   log.value ~ Year + (1 | Sample), #+ (1 | Month)#I tried with fixed month, results are same same
+#   data = sub.data.t.test.NO3.ph
+# )
+# summary(model.NO3.PHLOEM)
+wilcox.short.test(data = sub.data.t.test.NO3.ph)
 
-sub.data.t.test.NO3.x = data.t.test.N %>%
+
+sub.data.t.test.NO3.x = data.t.test.N.aggregate %>%
   filter(Compound == "NO3-" & Tissue == "XYLEM")
-model.NO3.XYLEM <- glmmTMB(
-  log.value ~ Year + (1 | Sample) + (1 | Month), #I tried with fixed month, results are same same
-  data = sub.data.t.test.NO3.x
-)
-summary(model.NO3.XYLEM)
-
+# model.NO3.XYLEM <- glmmTMB(
+#   log.value ~ Year + (1 | Sample), #+ (1 | Month) #I tried with fixed month, results are same same
+#   data = sub.data.t.test.NO3.x
+# )
+# summary(model.NO3.XYLEM)
+wilcox.short.test(data = sub.data.t.test.NO3.x)
+#NO3 is significant and NH4 not
 #make a plot for NH4
+#arugement for boxplot width
+boxplot.width = .4
 sub.data.t.test.NH4.summary.stat = sub.data.t.test.NH4.ph %>%
   group_by(Year) %>%
   summarise(
@@ -2941,22 +3567,32 @@ sub.data.t.test.NH4.summary.stat = sub.data.t.test.NH4.ph %>%
   )
 
 nh4.ph = ggplot(
-  sub.data.t.test.NH4.summary.stat,
-  aes(x = Year, y = mean, fill = Year)
+  sub.data.t.test.NH4.ph,
+  aes(x = Year, y = Value, fill = Year)
 ) +
-  geom_bar(
-    stat = "identity",
-    width = 0.6,
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  # geom_bar(
+  #   stat = "identity",
+  #   width = 0.6,
+  #   color = "black",
+  #   linewidth = 0.4,
+  #   alpha = .7
+  # ) +
+  # geom_errorbar(
+  #   aes(ymin = mean - se, ymax = mean + se),
+  #   width = 0.2,
+  #   linewidth = 0.7
+  # ) +
+  geom_jitter(
+    data = sub.data.t.test.NH4.ph,
+    aes(x = Year, y = Value),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
     color = "black",
-    linewidth = 0.4,
-    alpha = .7
+    inherit.aes = FALSE
   ) +
-  geom_errorbar(
-    aes(ymin = mean - se, ymax = mean + se),
-    width = 0.2,
-    linewidth = 0.7
-  ) +
-  scale_fill_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
   labs(
     x = "Year",
     y = "Concentration NH4",
@@ -2966,8 +3602,10 @@ nh4.ph = ggplot(
     strip.text = element_text(face = "bold", size = 13),
     plot.title = element_text(face = "bold"),
     plot.subtitle = element_text(size = 9, color = "grey40"),
-    legend.position = "none"
-  )
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
 nh4.ph
 cowplot::save_plot(
   'figuresR/nh4.ph.pdf',
@@ -2991,22 +3629,32 @@ sub.data.t.test.N03.summary.stat = sub.data.t.test.NO3.ph %>%
   )
 
 no3 = ggplot(
-  sub.data.t.test.N03.summary.stat,
-  aes(x = Year, y = mean, fill = Year)
+  sub.data.t.test.NO3.ph,
+  aes(x = Year, y = Value, fill = Year)
 ) +
-  geom_bar(
-    stat = "identity",
-    width = 0.6,
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  # geom_bar(
+  #   stat = "identity",
+  #   width = 0.6,
+  #   color = "black",
+  #   linewidth = 0.4,
+  #   alpha = .7
+  # ) +
+  # geom_errorbar(
+  #   aes(ymin = mean - se, ymax = mean + se),
+  #   width = 0.2,
+  #   linewidth = 0.7
+  # ) +
+  geom_jitter(
+    data = sub.data.t.test.NO3.ph,
+    aes(x = Year, y = Value),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
     color = "black",
-    linewidth = 0.4,
-    alpha = .7
+    inherit.aes = FALSE
   ) +
-  geom_errorbar(
-    aes(ymin = mean - se, ymax = mean + se),
-    width = 0.2,
-    linewidth = 0.7
-  ) +
-  scale_fill_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
   labs(
     x = "Year",
     y = "Concentration NO3",
@@ -3016,8 +3664,10 @@ no3 = ggplot(
     strip.text = element_text(face = "bold", size = 13),
     plot.title = element_text(face = "bold"),
     plot.subtitle = element_text(size = 9, color = "grey40"),
-    legend.position = "none"
-  )
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
 no3
 cowplot::save_plot(
   'figuresR/no3.ph.pdf',
@@ -3026,26 +3676,122 @@ cowplot::save_plot(
   ncol = 1 / 2
 )
 
-
-#now only single for total S
-totalS = ggplot(
-  data.for.phloem.gsh.totalS$summary_stats %>% filter(compound == "Total S"),
-  aes(x = Year, y = mean, fill = Year)
+no3xy = ggplot(
+  sub.data.t.test.NO3.x,
+  aes(x = Year, y = Value, fill = Year)
 ) +
-  geom_bar(
-    stat = "identity",
-    width = 0.6,
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = sub.data.t.test.NO3.x,
+    aes(x = Year, y = Value),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
     color = "black",
-    linewidth = 0.4,
-    alpha = .7
+    inherit.aes = FALSE
   ) +
-  geom_errorbar(
-    aes(ymin = mean - se, ymax = mean + se),
-    width = 0.2,
-    linewidth = 0.7
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "Concentration NO3 (xy)",
   ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+no3xy
+cowplot::save_plot(
+  'figuresR/no3.xy.pdf',
+  no3xy,
+  nrow = .8,
+  ncol = 1 / 2
+)
+
+nh4.xy = ggplot(
+  sub.data.t.test.NH4.x,
+  aes(x = Year, y = Value, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = sub.data.t.test.NH4.x,
+    aes(x = Year, y = Value),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "Concentration NH4 (xy)",
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+nh4.xy
+cowplot::save_plot(
+  'figuresR/nh4.xy.pdf',
+  nh4.xy,
+  nrow = .8,
+  ncol = 1 / 2
+)
+#now only single for total S
+model.totalS <- glmmTMB(
+  log(concentration) ~ Year + (1 | Sample), #I tried with fixed month, results are same same
+  data = total.sufur.gsh.clean.phloem %>% filter(compound == "Total S")
+)
+summary(model.totalS)
+wilcox.short.test(
+  data = total.sufur.gsh.clean.phloem %>% filter(compound == "Total S")
+)
+wilcox.short.test(
+  data = total.sufur.gsh.clean.phloem %>% filter(compound == "Sulfate")
+)
+wilcox.short.test(
+  data = total.sufur.gsh.clean.phloem %>% filter(compound == "GSH")
+)
+
+totalS = ggplot(
+  #data.for.phloem.gsh.totalS$summary_stats %>% filter(compound == "Total S"),
+  total.sufur.gsh.clean.phloem %>% filter(compound == "Total S"),
+  aes(x = Year, y = concentration, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = total.sufur.gsh.clean.phloem %>% filter(compound == "Total S"),
+    aes(x = Year, y = concentration),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  # geom_bar(
+  #   stat = "identity",
+  #   width = 0.6,
+  #   color = "black",
+  #   linewidth = 0.4,
+  #   alpha = .7
+  # ) +
+  # geom_errorbar(
+  #   aes(ymin = mean - se, ymax = mean + se),
+  #   width = 0.2,
+  #   linewidth = 0.7
+  # ) +
   #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
-  scale_fill_manual(values = c("2021" = "#008B45FF", "2022" = "#EE0000FF")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
   labs(
     x = "Year",
     y = "Concentration Total S",
@@ -3056,12 +3802,209 @@ totalS = ggplot(
     strip.text = element_text(face = "bold", size = 13),
     plot.title = element_text(face = "bold"),
     plot.subtitle = element_text(size = 9, color = "grey40"),
-    legend.position = "none"
-  )
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
 totalS
 cowplot::save_plot(
   'figuresR/totalS.pdf',
   totalS,
+  nrow = .8,
+  ncol = 1 / 2
+)
+
+GSH.plot = ggplot(
+  #data.for.phloem.gsh.totalS$summary_stats %>% filter(compound == "Total S"),
+  total.sufur.gsh.clean.phloem %>% filter(compound == "GSH"),
+  aes(x = Year, y = concentration, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = total.sufur.gsh.clean.phloem %>% filter(compound == "GSH"),
+    aes(x = Year, y = concentration),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "GSH",
+    fill = "Year"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+GSH.plot
+cowplot::save_plot(
+  'figuresR/GSH.plot.pdf',
+  GSH.plot,
+  nrow = .8,
+  ncol = 1 / 2
+)
+
+Sulfate.plot = ggplot(
+  #data.for.phloem.gsh.totalS$summary_stats %>% filter(compound == "Total S"),
+  total.sufur.gsh.clean.phloem %>% filter(compound == "Sulfate"),
+  aes(x = Year, y = concentration, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = total.sufur.gsh.clean.phloem %>% filter(compound == "Sulfate"),
+    aes(x = Year, y = concentration),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "Sulfate",
+    fill = "Year"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+Sulfate.plot
+cowplot::save_plot(
+  'figuresR/suflate.plot.pdf',
+  Sulfate.plot,
+  nrow = .8,
+  ncol = 1 / 2
+)
+
+#check for xylem
+total.sufur.gsh.clean.xylem = total.sufur %>%
+  dplyr::select(
+    `Sample name`,
+    `sulfate_x\r\n (mmol/L)`,
+    `GSH_x（µM)`
+  ) %>%
+  separate(
+    col = `Sample name`,
+    into = c("Sample", "Year"),
+    sep = "([A-Z])_|_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    Sample = as.integer(Sample),
+    Year = as.integer(Year)
+  ) %>%
+  dplyr::rename(sulfate = 4, GSH = 5) %>%
+  mutate(Tissue = "XYLEM") %>% #here my tissue I want
+  filter(Year < 2023) %>% #two years only
+  pivot_longer(
+    cols = c(sulfate, GSH),
+    names_to = "compound",
+    values_to = "concentration"
+  ) %>%
+  mutate(
+    Year = as.factor(Year),
+    compound = factor(
+      compound,
+      levels = c("sulfate", "GSH"),
+      labels = c("Sulfate", "GSH")
+    )
+  )
+
+wilcox.short.test(
+  data = total.sufur.gsh.clean.xylem %>% filter(compound == "Sulfate")
+)
+wilcox.short.test(
+  data = total.sufur.gsh.clean.phloem %>% filter(compound == "GSH")
+)
+
+GSH.plot.xylem = ggplot(
+  total.sufur.gsh.clean.xylem %>% filter(compound == "GSH"),
+  aes(x = Year, y = concentration, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = total.sufur.gsh.clean.xylem %>% filter(compound == "GSH"),
+    aes(x = Year, y = concentration),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "GSH (xylem)",
+    fill = "Year"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+GSH.plot.xylem
+cowplot::save_plot(
+  'figuresR/GSH.xylem.plot.pdf',
+  GSH.plot.xylem,
+  nrow = .8,
+  ncol = 1 / 2
+)
+
+Sulfate.xylem.plot = ggplot(
+  total.sufur.gsh.clean.xylem %>% filter(compound == "Sulfate"),
+  aes(x = Year, y = concentration, fill = Year)
+) +
+  geom_boxplot(alpha = .7, width = boxplot.width) +
+  geom_jitter(
+    data = total.sufur.gsh.clean.xylem %>% filter(compound == "Sulfate"),
+    aes(x = Year, y = concentration),
+    width = 0.08,
+    size = 2,
+    alpha = 0.6,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  #scale_fill_manual(values = c("2021" = "#5B8DB8", "2022" = "#E07B54")) + #c("#008B45FF", "#EE0000FF")
+  scale_fill_manual(values = c("2021" = "#5bb8c9cc", "2022" = "#9d9d9ea6")) + #c("#008B45FF", "#EE0000FF")
+  labs(
+    x = "Year",
+    y = "Sulfate (xylem)",
+    fill = "Year"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 9, color = "grey40"),
+    legend.position = "none",
+    axis.title.x = element_text(hjust = 1)
+  ) +
+  themesize
+Sulfate.xylem.plot
+cowplot::save_plot(
+  'figuresR/suflate.xylem.plot.pdf',
+  Sulfate.xylem.plot,
   nrow = .8,
   ncol = 1 / 2
 )
@@ -3459,6 +4402,79 @@ data.genes.all %>%
   geom_line() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
 
+#######################################
+#tree maps naeba
+library(sf)
+library(maps)
+library(ggplot2)
+library(ggrepel)
+
+world_sf <- st_as_sf(map("world", plot = FALSE, fill = TRUE))
+japan_sf <- st_as_sf(map("world", regions = "Japan", plot = FALSE, fill = TRUE))
+
+site <- data.frame(
+  name = "Mt. Naeba (NB)",
+  lon = 138 + 46 / 60,
+  lat = 36 + 51 / 60
+)
+site_sf <- st_as_sf(site, coords = c("lon", "lat"), crs = 4326)
+
+p_japan <- ggplot() +
+  geom_sf(
+    data = world_sf,
+    fill = "grey85",
+    colour = "grey60",
+    linewidth = 0.3
+  ) +
+  geom_sf(
+    data = japan_sf,
+    fill = "#d6eaf8",
+    colour = "grey40",
+    linewidth = 0.5
+  ) +
+  geom_sf(
+    data = site_sf,
+    shape = 23,
+    fill = "#e74c3c",
+    colour = "black",
+    size = 3.5,
+    stroke = 0.8
+  ) +
+  geom_label_repel(
+    data = site,
+    aes(
+      x = lon,
+      y = lat,
+      label = "Mt. Naeba (NB)\n36°51\u2032N, 138°46\u2032E\n900 m a.s.l."
+    ),
+    size = 2.8,
+    nudge_x = 3.5,
+    nudge_y = -3,
+    lineheight = 1.1,
+    label.size = 0.3,
+    fill = "white",
+    colour = "black",
+    segment.colour = "black",
+    segment.size = 0.4
+  ) +
+  coord_sf(xlim = c(129, 146), ylim = c(30, 46), expand = FALSE) +
+  labs(x = NULL, y = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.background = element_rect(fill = "#eaf4fb"),
+    panel.border = element_rect(colour = "black", linewidth = 0.8),
+    panel.grid.major = element_line(colour = "white", linewidth = 0.3),
+    axis.text = element_text(size = 8, colour = "black"),
+    axis.ticks = element_line(linewidth = 0.3),
+    plot.margin = margin(5, 5, 5, 5)
+  )
+
+cowplot::save_plot(
+  'figuresR/naeba.maps.pdf',
+  p_japan,
+  nrow = 1,
+  ncol = 1
+)
 ######################################
 #lets make netowkr genes
 # dyn.load(here("dynGENIE3-master", "dynGENIE3_R_C_wrapper", "dynGENIE3.so"))

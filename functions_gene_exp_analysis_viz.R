@@ -1,3 +1,49 @@
+#####################################
+#Gene expression analysis in Fagus crenata
+#all functions create and used
+#####################################
+
+#creator : Valentin Journ\'e; Kyushu University
+#contact : journe.valentin@gmail.com
+#file created on 2024-09-26
+#updated on 2026 - 06
+
+#####################################
+#loading package
+#####################################
+#*Note, I used GPT to clean the header of the functions
+
+# Detach all non-base R packages from the current session.
+# This utility function removes all loaded packages except the core
+# base R packages, helping to avoid namespace conflicts and ensuring
+# a clean working environment before running analyses.
+detachAllPackages <- function() {
+  basic.packages <- c(
+    "package:stats",
+    "package:graphics",
+    "package:grDevices",
+    "package:utils",
+    "package:datasets",
+    "package:methods",
+    "package:base"
+  )
+
+  package.list <- search()[ifelse(
+    unlist(gregexpr("package:", search())) == 1,
+    TRUE,
+    FALSE
+  )]
+
+  package.list <- setdiff(package.list, basic.packages)
+
+  if (length(package.list) > 0)
+    for (package in package.list) detach(package, character.only = TRUE)
+}
+
+
+# Utility function to load R packages.
+# Packages that are not already installed are automatically installed
+# and then loaded into the current session.
 using <- function(...) {
   libs <- unlist(list(...))
   req <- unlist(lapply(libs, require, character.only = TRUE))
@@ -8,8 +54,9 @@ using <- function(...) {
   }
 }
 
-#to calculate the CV
-#i used the yearly CV (and not seasonal ones winthing year)
+# Calculate the coefficient of variation (CV = SD / Mean)
+# Used to quantify inter-annual variability in gene expression or flowering.
+# Returns NA when the mean is zero or missing.
 my_cv_fun <- function(x) {
   m <- mean(x, na.rm = TRUE)
   s <- sd(x, na.rm = TRUE)
@@ -17,6 +64,14 @@ my_cv_fun <- function(x) {
   s / m
 }
 
+# Calculate inter-annual variability in gene expression.
+# For each gene and individual, monthly expression values are aggregated
+# within years (sum of expression across sampling months), and the
+# coefficient of variation (CV) is calculated across years.
+# Gene-level variability is then obtained by averaging CV values across
+# individuals. The transformed coefficient of variation (kCV) is also
+# computed following Lobry et al 2023 MEE, providing a bounded measure
+# of variability ranging from 0 to 1.
 functioncalc_gene_variability_cv = function(data) {
   gene_year_expr <- data %>%
     group_by(qseqid, TreeID, year) %>%
@@ -41,11 +96,17 @@ functioncalc_gene_variability_cv = function(data) {
   return(cv_gene)
 }
 
-#now a simialr appraoch with sync accrsos indivdidual gene experesision
+# Calculate synchrony in gene expression among individuals.
+# For each gene, expression values are reshaped into a time-by-individual matrix,
+# and pairwise correlations among individuals are calculated across sampling dates.
+# Synchrony is defined as the mean pairwise correlation among individuals.
+# The percentage of missing pairwise correlations is also reported (value would be the same for all genes)
 functioncalc_gene_synchrony = function(
   data,
   method = c("pearson", "spearman")
 ) {
+  method <- match.arg(method) #make sure only one matching
+
   synchrony_gene <- data %>%
     group_by(qseqid) %>%
     nest() %>%
@@ -75,7 +136,9 @@ functioncalc_gene_synchrony = function(
 }
 
 
-#format climate file
+# Format daily climate data and extract temporal variables.
+# Converts date strings into POSIXct format and derives day, month, year,
+# calendar date, and day-of-year (DOY) information for subsequent analyses.
 format_climate_temperature = function(data) {
   data %>%
     mutate(date.bis = as.POSIXct(Date, format = "%Y/%m/%d")) %>%
@@ -90,11 +153,17 @@ format_climate_temperature = function(data) {
     )
 }
 
-
+# Standardize a numeric vector using z-score transformation.
+# Values are centered on the mean and scaled by the standard deviation,
+# resulting in a variable with mean = 0 and standard deviation = 1.
+# Missing values are ignored when calculating summary statistics.
+#I am using this for the heatmaps
 cal_z_score <- function(x) {
   (x - mean(x, na.rm = T)) / sd(x, na.rm = T)
 }
 
+# Replace a specified character string with a new value.
+# Intended for cleaning imported datasets by substituting predefined
 replace_string <- function(x) {
   if (is.character(x)) {
     x <- ifelse(x == string_to_replace, new_value, x)
@@ -102,8 +171,16 @@ replace_string <- function(x) {
   return(x)
 }
 
+# Calculate the standard error of the mean (SEM).
 std.error <- function(x, na.rm = TRUE) sd(x, na.rm = TRUE) / sqrt(length(x))
 
+# Reshape Boruta importance history into a data frame for plotting or downstream filtering.
+# The function extracts finite importance values from a Boruta object, optionally includes
+# selected shadow attributes, assigns colors according to Boruta decisions
+# (Confirmed, Tentative, Rejected, Shadow), orders features by median importance,
+# and returns a wide data frame of importance values.
+# If requested, the output can be filtered to retain only selected features.
+#the function is based on the original one
 reshape_the_Boruta_data <- function(
   x,
   whichShadow = c(TRUE, TRUE, TRUE),
@@ -160,13 +237,23 @@ reshape_the_Boruta_data <- function(
   return(df)
 }
 
-#transform 0-1 data
+# Transform proportional data for beta regression.
+# Applies the Smithson & Verkuilen (2006) adjustment to move values
+# bounded at 0 and 1 into the open interval (0,1), which is required
+# for standard beta regression models.
+# The transformation depends on the sample size and preserves the
+# relative ordering of observations.
 y.transf.betareg <- function(y) {
   n.obs <- sum(!is.na(y))
   (y * (n.obs - 1) + 0.5) / n.obs
 }
 
-#compute the window for log/beta reg analysis
+# Compute gene expression summaries across all possible monthly windows.
+# For each selected gene, individual tree, and year, this function identifies
+# all available combinations of sampled months and calculates both the mean
+# and cumulative log2 expression within each window.
+# The output contains one row per TreeID, year, gene, and month-window
+# combination, and is used as input for logistic or beta regression analyses.
 compute_window_summary <- function(gene_ids, data) {
   data %>%
     filter(qseqid %in% gene_ids) %>%
@@ -200,12 +287,17 @@ compute_window_summary <- function(gene_ids, data) {
         }
       )
     ) %>%
-    dplyr::select(-data) %>%
+    dplyr::select(-data) %>% #dplyr here !
     unnest(window_data)
 }
 
-#extract informaiton from beta regression of fruit relation to gene expression
-#remove column with model inside the name
+# Extract model summaries, confidence intervals, goodness-of-fit metrics, and AUC values.
+# This function takes a data frame containing fitted models in a list-column,
+# removes rows with NULL models, and extracts tidy coefficient tables,
+# confidence intervals, global model summaries, and model performance metrics.
+# For logistic regression models fitted with glm, the area under the ROC curve
+# (AUC) is additionally calculated from predicted probabilities and observed
+# responses. Model objects and data columns are removed from the final output
 extract_model_info <- function(model_df, model_col = "model_cumsum") {
   model_sym <- rlang::sym(model_col)
 
@@ -258,7 +350,12 @@ extract_model_info <- function(model_df, model_col = "model_cumsum") {
     ) %>%
     dplyr::select(-matches("model"), -data)
 }
-#fit beta regression
+
+# Fit beta regression models relating flowering intensity to gene expression.
+# For each gene and seasonal window, a beta regression model is fitted using
+# flowering intensity (transformed to the open interval (0,1)) as the response
+# and gene expression metrics (e.g., cumulative expression) as predictors.
+# Models that fail to converge or produce errors are safely returned as NULL.
 fit.beta.regression = function(
   window_data,
   formula.fit.here = as.formula("flowering.percentage.trans ~ cumsum_expr")
@@ -270,6 +367,7 @@ fit.beta.regression = function(
       model_cumsum = map(
         data,
         possibly(
+          #need the possible here because sometime models are not workign
           ~ betareg(formula.fit.here, data = .x),
           otherwise = NULL
         )
@@ -277,6 +375,11 @@ fit.beta.regression = function(
     )
 }
 
+# Fit logistic regression models relating flowering occurrence to gene expression.
+# For each gene and seasonal window, a binomial generalized linear model (logit link)
+# is fitted using flowering presence/absence as the response and gene expression
+# metrics (e.g., cumulative expression) as predictors.
+# One model is fitted per gene and seasonal window combination.
 fit.logistic.regression = function(
   window_data,
   formula.fit.here = as.formula("fac.mastONOFF ~ cumsum_expr")
@@ -292,6 +395,15 @@ fit.logistic.regression = function(
     )
 }
 
+# Run regression analysis for one batch of gene-window expression summaries.
+# The function reads a precomputed batch file, joins flowering intensity data
+# by TreeID and year, fits either beta regression or logistic regression models
+# for each gene and seasonal window, extracts model summaries and performance
+# metrics, and saves the results as a .qs file. Existing output files are
+# skipped to avoid rerunning completed batches.
+#NOTE to MYSELF, at the time I created the code, I was using qs
+#but now this packaage is unstable, so I might need to change and update with qs2 package
+#or simply create CSV, but it takes too much space
 run_regression_batch <- function(
   batch_index,
   input_dir,
@@ -350,12 +462,18 @@ run_regression_batch <- function(
     model_col = "model_cumsum"
   )
 
-  # Save output with low qs
+  # Save output with low qs# Updata MAY 2026, maybe use qss2 now
   qs::qsave(summary_cumsum_gene, output_file)
   message("Saved batch ", batch_index, " → ", output_file)
 }
 
-#generate a calendar for weather (afer climwin analysis)
+# Generate a reverse day calendar for climate-window analyses.
+# For each reference year, the function builds a calendar counting backwards
+# from a specified reference day of year (refday), over a user-defined number
+# of previous days. This is useful for aligning climate data to biological
+# reference dates and extracting climate windows spanning one or more years.
+# The output contains calendar dates, year, month, day-of-year, and reversed
+# day indices for each reference year.
 generate_reverse_day_calendar <- function(
   refday = 274,
   lastdays = 1095,
@@ -411,57 +529,13 @@ generate_reverse_day_calendar <- function(
   bind_rows(vectotemp)
 }
 
-
-# extract_climate_windows_by_year <- function(
-#   best_clim_mode,
-#   calendar_climate,
-#   temperature_df
-# ) {
-#   library(dplyr)
-#   library(purrr)
-#
-#   result <- best_clim_mode %>%
-#     mutate(row_id = row_number()) %>%
-#     group_split(row_id) %>%
-#     map_dfr(function(row) {
-#       # No extraction, row is already a 1-row tibble
-#       win_open <- 53 #row$WindowOpen
-#       win_close <- 37 #row$WindowClose
-#       clim_var <- "rainfall" #as.character(row$climate)
-#
-#       # Filter calendar within window
-#       win_dates <- calendar_climate %>%
-#         dplyr::select(DOY, days.reversed) %>%
-#         dplyr::filter(days.reversed >= win_close, days.reversed <= win_open)
-#
-#       # Join temperature with calendar to get year
-#       temp_merged <- temperature_df %>%
-#         inner_join(win_dates, by = "DOY") # Assumes DOY is in both
-#
-#       # For each year, compute the mean of the desired variable
-#       yearly_clim <- temp_merged %>%
-#         group_by(year) %>%
-#         summarise(
-#           mean_value = mean(.data[[clim_var]], na.rm = TRUE),
-#           .groups = "drop"
-#         ) %>%
-#         mutate(
-#           response = row$response,
-#           climate = clim_var,
-#           type = row$type,
-#           stat = row$stat,
-#           func = row$func,
-#           DeltaAICc = row$DeltaAICc,
-#           WindowOpen = win_open,
-#           WindowClose = win_close
-#         )
-#
-#       yearly_clim
-#     })
-#
-#   return(result)
-# }
-
+# Extract yearly climate values from selected climate windows.
+# For each best climate-window model, this function identifies the corresponding
+# window of days using a reverse-day calendar, extracts the selected climate
+# variable from the daily climate data for each year, and calculates the mean
+# climate value within that window. Model information such as response,
+# climate variable, statistic, function, Delta AICc, and window boundaries is
+# retained in the output.
 extract_climate_windows_by_year <- function(
   best_clim_mode,
   calendar_climate,
@@ -539,30 +613,11 @@ extract_climate_windows_by_year <- function(
 }
 
 
-detachAllPackages <- function() {
-  basic.packages <- c(
-    "package:stats",
-    "package:graphics",
-    "package:grDevices",
-    "package:utils",
-    "package:datasets",
-    "package:methods",
-    "package:base"
-  )
-
-  package.list <- search()[ifelse(
-    unlist(gregexpr("package:", search())) == 1,
-    TRUE,
-    FALSE
-  )]
-
-  package.list <- setdiff(package.list, basic.packages)
-
-  if (length(package.list) > 0)
-    for (package in package.list) detach(package, character.only = TRUE)
-}
-
-#plot gam effect
+# Plot the predicted effect of one predictor from a fitted GAM.
+# The function creates a prediction grid in which the focal predictor varies
+# across its observed range while all other predictors are held at their mean.
+# Predicted responses and 95% confidence intervals are then plotted as a smooth
+# effect curve, optionally with the original observed data points overlaid.
 plot_gam_effect <- function(
   model,
   data,
@@ -620,7 +675,14 @@ plot_gam_effect <- function(
   }
 }
 
-#fit each gam model to gene
+# Fit generalized additive models (GAMs) separately for each gene.
+# For each gene, monthly expression and environmental/resource variables are
+# first aggregated at the gene, year, TreeID level. A GAM is then fitted to
+# model cumulative log2 gene expression as a smooth function of climate
+# variables and resource traits, including temperature, rainfall, sunshine,
+# nitrogen, NSC, and carbon. For each successfully fitted model, the function
+# stores model summaries, smooth-effect plots, and derivatives of smooth terms
+# to evaluate how gene expression changes along environmental gradients.
 fit_gam_to_genes <- function(data, k = 4) {
   # List to store all model outputs
   all_results <- list()
@@ -703,7 +765,11 @@ fit_gam_to_genes <- function(data, k = 4) {
   ))
 }
 
-
+# Summarize resource and nutrient variables across observations.
+# The function aggregates carbohydrate, nutrient, and stoichiometric variables
+# using either the mean or cumulative sum, depending on the selected method.
+# Flowering status (fac.mastONOFF) is retained from the first observation.
+# Intended for generating annual or seasonal summaries of resource availability.
 summarise_elements_resources <- function(data, method = c("mean", "cumsum")) {
   method <- match.arg(method)
 
@@ -738,7 +804,11 @@ summarise_elements_resources <- function(data, method = c("mean", "cumsum")) {
     )
 }
 
-
+# Format amino acid concentration data from a wide spreadsheet into long format.
+# The function reconstructs column names from a two-row header, converts dates
+# and concentration values to appropriate formats, and reshapes the data into
+# a tidy long table. Compound names, sample identifiers, and measurement units
+# are extracted from the original headers, producing one row per observation.
 format.amino.acid.long = function(data) {
   header_rows <- data[1:2, ]
   data_rows <- data[-(1:2), ]
@@ -781,72 +851,15 @@ format.amino.acid.long = function(data) {
 }
 
 
-#go analysis function from Kudoh
-# my_GO_analysis = function(gsc, gene_ls, all.Gene, pvalueCutoff = .05) {
-#   # parameter for GOstats
-#   p <- GSEAGOHyperGParams(
-#     name = "Paramaters",
-#     geneSetCollection = gsc,
-#     geneIds = gene_ls,
-#     universeGeneIds = all.Gene,
-#     ontology = "BP",
-#     pvalueCutoff = pvalueCutoff,
-#     conditional = TRUE,
-#     testDirection = "over"
-#   )
-#
-#   # Fisher's exact test
-#   result <- hyperGTest(p)
-#
-#   # summarize
-#   raw_pval = pvalues(result)
-#   adj_pval = p.adjust(raw_pval, method = "BH")
-#   odds = oddsRatios(result)
-#   expected_count = expectedCounts(result)
-#   gene_count = geneCounts(result)
-#   gene_univ_count = universeCounts(result)
-#
-#   summary_table = data.frame(
-#     rank = 1:length(raw_pval),
-#     go_id = names(raw_pval),
-#     raw.pvalues = raw_pval,
-#     adjusted.pvalues = adj_pval,
-#     oddsRatios = odds,
-#     expectedCounts = expected_count,
-#     geneCounts = gene_count,
-#     universeCounts = gene_univ_count,
-#     siginificance = ""
-#   )
-#
-#   summary_table$siginificance[summary_table$adjusted.pvalues < 0.001] = "***"
-#   summary_table$siginificance[summary_table$adjusted.pvalues < 0.01] = "**"
-#   summary_table$siginificance[
-#     (summary_table$adjusted.pvalues >= 0.01) &
-#       (summary_table$adjusted.pvalues < 0.05)
-#   ] = "*"
-#   summary_table$Genes = ""
-#
-#   target_GOdatabase = GOdatabase[GOdatabase$Orthogroup_ID %in% gene_ls, ]
-#
-#   for (k in 1:dim(summary_table)[1]) {
-#     GOid_k = summary_table$go_id[k]
-#     OGs = unique(target_GOdatabase$Orthogroup_ID[
-#       target_GOdatabase$go_id == GOid_k
-#     ])
-#     summary_table$Genes[k] = paste(OGs, collapse = ", ")
-#   }
-#
-#   row.names(summary_table) = 1:dim(summary_table)[1]
-#   summary_table = left_join(summary_table, go_termname, by = "go_id")
-#
-#   return(summary_table)
-# }
-
-#we got more genes on average for low CV but counted more max GO terms with high CV
-# make gene set collection for GOstats - Copy from Kudoh et al
-#list.genes.cv is the list of genes
-#GO.gene.list for GO list
-#adapted from Kudoh 2025
+# Perform Gene Ontology (GO) enrichment analysis using GOstats.
+# The function builds a gene set collection from a custom GO annotation table,
+# defines a universe of annotated genes, and tests whether GO terms are
+# over-represented in a user-defined gene list. Enrichment can be performed
+# for Biological Process (BP) or Cellular Component (CC) ontology terms.
+# The output includes raw and BH-adjusted p-values, odds ratios, expected
+# counts, observed gene counts, universe counts, significance labels, and
+# enrichment ratios.
+#adapted from Kudoh et al 2025, Elife
 GO_analysis <- function(
   list.genes,
   GO.gene.list,
@@ -921,7 +934,13 @@ GO_analysis <- function(
 }
 
 
-#do wilcoxon test on GSH and sulfate total S
+# Perform a paired Wilcoxon signed-rank test between years.
+# The function compares matched observations from 2021 and 2022,
+# pairing samples by their ordering after sorting by sample identity.
+# If a column named 'concentration' is present, it is automatically
+# renamed to 'Value' for compatibility. The Wilcoxon test statistic
+# and associated p-value are returned.
+#NOTE HERE YOU NEED 2021 and 2022
 do.stat.element_gsh_sulfate_totalS = function(data) {
   summary_stats <- data %>%
     group_by(compound, Year) %>%
@@ -945,7 +964,7 @@ do.stat.element_gsh_sulfate_totalS = function(data) {
   wilcox_results <- lapply(compounds, function(cmp) {
     g2021 <- data %>%
       filter(compound == cmp, Year == 2021) %>%
-      arrange(Sample) %>% # CRITICAL: same order for pairing
+      arrange(Sample) %>% # CRITICAL part : same order for pairing
       pull(concentration)
 
     g2022 <- data %>%
@@ -1008,3 +1027,141 @@ do.stat.element_gsh_sulfate_totalS = function(data) {
     sig_labels = sig_labels
   ))
 }
+
+# Perform a paired Wilcoxon signed-rank test between years.
+# The function compares matched observations from 2021 and 2022,
+# pairing samples by their ordering after sorting by sample identity.
+# If a column named 'concentration' is present, it is automatically
+# renamed to 'Value' for compatibility. The Wilcoxon test statistic
+# and associated p-value are returned.
+#NOTE HERE YOU NEED 2021 and 2022
+#it is the same as before, except here I wanted less detaisl, but idea is the same
+#just did not want all other stats
+wilcox.short.test = function(data) {
+  if (any(names(data) == 'concentration')) {
+    data$Value = data$concentration
+  }
+  g2021 <- data %>%
+    filter(Year == 2021) %>%
+    arrange(Sample) %>% # should be same
+    pull(Value)
+
+  g2022 <- data %>%
+    filter(Year == 2022) %>%
+    arrange(Sample) %>%
+    pull(Value)
+
+  test <- wilcox.test(g2021, g2022, paired = TRUE, exact = FALSE)
+  return(test)
+}
+
+# extract_climate_windows_by_year <- function(
+#   best_clim_mode,
+#   calendar_climate,
+#   temperature_df
+# ) {
+#   library(dplyr)
+#   library(purrr)
+#
+#   result <- best_clim_mode %>%
+#     mutate(row_id = row_number()) %>%
+#     group_split(row_id) %>%
+#     map_dfr(function(row) {
+#       # No extraction, row is already a 1-row tibble
+#       win_open <- 53 #row$WindowOpen
+#       win_close <- 37 #row$WindowClose
+#       clim_var <- "rainfall" #as.character(row$climate)
+#
+#       # Filter calendar within window
+#       win_dates <- calendar_climate %>%
+#         dplyr::select(DOY, days.reversed) %>%
+#         dplyr::filter(days.reversed >= win_close, days.reversed <= win_open)
+#
+#       # Join temperature with calendar to get year
+#       temp_merged <- temperature_df %>%
+#         inner_join(win_dates, by = "DOY") # Assumes DOY is in both
+#
+#       # For each year, compute the mean of the desired variable
+#       yearly_clim <- temp_merged %>%
+#         group_by(year) %>%
+#         summarise(
+#           mean_value = mean(.data[[clim_var]], na.rm = TRUE),
+#           .groups = "drop"
+#         ) %>%
+#         mutate(
+#           response = row$response,
+#           climate = clim_var,
+#           type = row$type,
+#           stat = row$stat,
+#           func = row$func,
+#           DeltaAICc = row$DeltaAICc,
+#           WindowOpen = win_open,
+#           WindowClose = win_close
+#         )
+#
+#       yearly_clim
+#     })
+#
+#   return(result)
+# }
+
+#go analysis function from Kudoh
+# my_GO_analysis = function(gsc, gene_ls, all.Gene, pvalueCutoff = .05) {
+#   # parameter for GOstats
+#   p <- GSEAGOHyperGParams(
+#     name = "Paramaters",
+#     geneSetCollection = gsc,
+#     geneIds = gene_ls,
+#     universeGeneIds = all.Gene,
+#     ontology = "BP",
+#     pvalueCutoff = pvalueCutoff,
+#     conditional = TRUE,
+#     testDirection = "over"
+#   )
+#
+#   # Fisher's exact test
+#   result <- hyperGTest(p)
+#
+#   # summarize
+#   raw_pval = pvalues(result)
+#   adj_pval = p.adjust(raw_pval, method = "BH")
+#   odds = oddsRatios(result)
+#   expected_count = expectedCounts(result)
+#   gene_count = geneCounts(result)
+#   gene_univ_count = universeCounts(result)
+#
+#   summary_table = data.frame(
+#     rank = 1:length(raw_pval),
+#     go_id = names(raw_pval),
+#     raw.pvalues = raw_pval,
+#     adjusted.pvalues = adj_pval,
+#     oddsRatios = odds,
+#     expectedCounts = expected_count,
+#     geneCounts = gene_count,
+#     universeCounts = gene_univ_count,
+#     siginificance = ""
+#   )
+#
+#   summary_table$siginificance[summary_table$adjusted.pvalues < 0.001] = "***"
+#   summary_table$siginificance[summary_table$adjusted.pvalues < 0.01] = "**"
+#   summary_table$siginificance[
+#     (summary_table$adjusted.pvalues >= 0.01) &
+#       (summary_table$adjusted.pvalues < 0.05)
+#   ] = "*"
+#   summary_table$Genes = ""
+#
+#   target_GOdatabase = GOdatabase[GOdatabase$Orthogroup_ID %in% gene_ls, ]
+#
+#   for (k in 1:dim(summary_table)[1]) {
+#     GOid_k = summary_table$go_id[k]
+#     OGs = unique(target_GOdatabase$Orthogroup_ID[
+#       target_GOdatabase$go_id == GOid_k
+#     ])
+#     summary_table$Genes[k] = paste(OGs, collapse = ", ")
+#   }
+#
+#   row.names(summary_table) = 1:dim(summary_table)[1]
+#   summary_table = left_join(summary_table, go_termname, by = "go_id")
+#
+#   return(summary_table)
+# }
